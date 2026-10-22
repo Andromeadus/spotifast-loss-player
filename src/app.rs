@@ -3248,8 +3248,10 @@ impl App {
     }
 
     /// Loads details for the remembered track before playback starts.
+    /// Called every frame, so it waits for the network: a failed request
+    /// would otherwise be sent again on the next frame.
     fn request_resume_track(&mut self) {
-        if self.now_playing_live().is_some() {
+        if self.now_playing_live().is_some() || !self.network_reachable {
             return;
         }
         let Some(uri) = self.resume_track.clone() else {
@@ -24352,6 +24354,19 @@ mod tests {
             !app.track_cache.contains_key("one"),
             "the song left behind can go"
         );
+    }
+
+    #[test]
+    fn the_resume_track_waits_for_the_network() {
+        let mut app = headless_app();
+        app.resume_track = Some("spotify:track:resume".into());
+        app.network_reachable = false;
+        app.request_resume_track();
+        assert!(app.track_requests.is_empty());
+
+        app.network_reachable = true;
+        app.request_resume_track();
+        assert!(app.track_requests.contains("resume"));
     }
 
     #[test]
