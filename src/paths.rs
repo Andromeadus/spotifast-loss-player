@@ -202,6 +202,12 @@ impl AppDirs {
         self.cache.join("home").join(account_file_name(account_id))
     }
 
+    /// The signed-in account's profile, for starting without a network.
+    /// It sits with the playlist list, so signing out removes it too.
+    pub fn profile_cache_file(&self) -> PathBuf {
+        self.cache.join("library").join("profile.json")
+    }
+
     /// The account snapshots the backend writes as it goes: the playlist
     /// list, Home and Liked Songs.
     pub fn account_snapshot_dirs(&self) -> [PathBuf; 3] {

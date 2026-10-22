@@ -2973,7 +2973,12 @@ impl Worker {
         let gateway = Arc::clone(&self.api);
         let commands = self.commands.clone();
         let attempt = self.authorization_attempt;
+        let profile = self.dirs.profile_cache_file();
         tokio::spawn(async move {
+            let mut remembered = crate::account_cache::read_own::<User>(&profile)
+                .await
+                .filter(|cache| cache.account_id == cache.data.id)
+                .map(|cache| cache.data);
             let mut wait = Duration::from_secs(2);
             let error = loop {
                 if !lease.current() {
@@ -2994,6 +2999,19 @@ impl Worker {
                     Err(error @ ApiError::SignInExpired { .. }) => break error,
                     Err(error) if error.status().is_some_and(|status| status < 500) => break error,
                     Err(error) => {
+                        if let Some(user) = offline_profile(&error, &mut remembered) {
+                            log::info!(
+                                "Spotify is unreachable: starting with the remembered account"
+                            );
+                            let _ = commands.send(Command::WebVerified {
+                                source,
+                                token: Box::new(token),
+                                user: Box::new(user),
+                                lease: lease.clone(),
+                                attempt,
+                            });
+                            return;
+                        }
                         log::warn!("Spotify sign-in verification will retry: {error}");
                         tokio::time::sleep(wait).await;
                         wait = (wait * 2).min(Duration::from_secs(60));
@@ -3070,6 +3088,13 @@ impl Worker {
             self.finish_authorization(source);
             return;
         }
+        let profile = self.dirs.profile_cache_file();
+        let cache = crate::account_cache::Cache::new(user.id.clone(), user.clone());
+        tokio::spawn(async move {
+            if let Err(error) = crate::account_cache::write(&profile, &cache).await {
+                log::warn!("unable to remember the account profile: {error}");
+            }
+        });
         if let Some(tokens) = self.web_tokens[web_slot(source).index()].clone() {
             let notice = self.storage_notice(self.credentials.lease(web_slot(source)));
             tokio::spawn(async move {
@@ -8643,6 +8668,50 @@ mod authorization_tests {
     }
 
     #[test]
+    fn only_an_unreachable_spotify_starts_with_the_remembered_account() {
+        let user = || User {
+            id: "alice".into(),
+            ..Default::default()
+        };
+        for answered in [
+            ApiError::RateLimited,
+            ApiError::Status {
+                status: 503,
+                message: "unavailable".into(),
+            },
+        ] {
+            let mut remembered = Some(user());
+            assert_eq!(offline_profile(&answered, &mut remembered), None);
+            assert_eq!(remembered, Some(user()));
+        }
+        let unreachable = ApiError::Network("dns error".into());
+        let mut remembered = Some(user());
+        assert_eq!(offline_profile(&unreachable, &mut remembered), Some(user()));
+        assert_eq!(offline_profile(&unreachable, &mut remembered), None);
+    }
+
+    #[test]
+    fn a_verified_account_is_remembered_for_an_offline_start() {
+        let (runtime, mut worker, _events) = worker("remembers-profile");
+        let _entered = runtime.enter();
+        verify(&mut worker, ApiSource::Shared, "alice");
+        let path = worker.dirs.profile_cache_file();
+        let cache = runtime.block_on(async {
+            for _ in 0..100 {
+                if let Some(cache) = crate::account_cache::read_own::<User>(&path).await {
+                    return Some(cache);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            None
+        });
+        let cache = cache.expect("the profile is written");
+        assert_eq!(cache.account_id, "alice");
+        assert_eq!(cache.data.display_name.as_deref(), Some("Listener"));
+        assert!(path.starts_with(&worker.dirs.account_snapshot_dirs()[0]));
+    }
+
+    #[test]
     fn personal_verification_unblocks_sign_in_while_shared_verification_waits() {
         let (runtime, mut worker, events) = worker("personal-first");
         let _entered = runtime.enter();
@@ -8852,6 +8921,15 @@ mod authorization_tests {
         );
         assert!(playback_credentials(Some(AccountId::new("")), "dummy".into()).is_none());
     }
+}
+
+/// The remembered profile to start with when the account check could not
+/// reach Spotify at all, once. Any answer from Spotify, even a rate limit,
+/// means the network is there, so it keeps the usual retry.
+fn offline_profile(error: &ApiError, remembered: &mut Option<User>) -> Option<User> {
+    matches!(error, ApiError::Network(_))
+        .then(|| remembered.take())
+        .flatten()
 }
 
 fn web_slot(source: ApiSource) -> CredentialSlot {

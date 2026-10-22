@@ -32,6 +32,14 @@ pub async fn read<T: DeserializeOwned>(path: &std::path::Path, account: &str) ->
     (cache.version == VERSION && cache.account_id == account).then_some(cache.data)
 }
 
+/// A snapshot whose data names its own account, such as the profile:
+/// read before any account is known.
+pub async fn read_own<T: DeserializeOwned>(path: &std::path::Path) -> Option<Cache<T>> {
+    let bytes = tokio::fs::read(path).await.ok()?;
+    let cache: Cache<T> = serde_json::from_slice(&bytes).ok()?;
+    (cache.version == VERSION).then_some(cache)
+}
+
 /// Replaces the snapshot atomically, so a failed write leaves the previous
 /// one readable.
 pub async fn write<T: Serialize>(path: &std::path::Path, cache: &Cache<T>) -> std::io::Result<()> {
