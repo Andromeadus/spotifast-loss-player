@@ -346,10 +346,14 @@ hyper-proxy2 = { git = "https://github.com/crmne/hyper-proxy2", rev = "efca48113
 # layout (#1840).
 # Every librespot crate comes from the fork so one copy exists. Drop each
 # patch once upstream merges it.
-librespot-audio = { git = "https://github.com/crmne/librespot", rev = "8c68baffac5a3052cd0f24a6fbc1970131589790" }
-librespot-connect = { git = "https://github.com/crmne/librespot", rev = "8c68baffac5a3052cd0f24a6fbc1970131589790" }
-librespot-core = { git = "https://github.com/crmne/librespot", rev = "8c68baffac5a3052cd0f24a6fbc1970131589790" }
-librespot-metadata = { git = "https://github.com/crmne/librespot", rev = "8c68baffac5a3052cd0f24a6fbc1970131589790" }
-librespot-oauth = { git = "https://github.com/crmne/librespot", rev = "8c68baffac5a3052cd0f24a6fbc1970131589790" }
-librespot-playback = { git = "https://github.com/crmne/librespot", rev = "8c68baffac5a3052cd0f24a6fbc1970131589790" }
-librespot-protocol = { git = "https://github.com/crmne/librespot", rev = "8c68baffac5a3052cd0f24a6fbc1970131589790" }
+# For offline downloads (docs/plans/offline-downloads.md) this fork takes
+# them from Andromeadus/librespot's offline branch: crmne's commit above
+# plus a player source for kept songs. Move it onto crmne's newer commits
+# by rebasing that branch.
+librespot-audio = { git = "https://github.com/Andromeadus/librespot", rev = "dfd287182fbd270b719df44cd71c2b63c8a3820e" }
+librespot-connect = { git = "https://github.com/Andromeadus/librespot", rev = "dfd287182fbd270b719df44cd71c2b63c8a3820e" }
+librespot-core = { git = "https://github.com/Andromeadus/librespot", rev = "dfd287182fbd270b719df44cd71c2b63c8a3820e" }
+librespot-metadata = { git = "https://github.com/Andromeadus/librespot", rev = "dfd287182fbd270b719df44cd71c2b63c8a3820e" }
+librespot-oauth = { git = "https://github.com/Andromeadus/librespot", rev = "dfd287182fbd270b719df44cd71c2b63c8a3820e" }
+librespot-playback = { git = "https://github.com/Andromeadus/librespot", rev = "dfd287182fbd270b719df44cd71c2b63c8a3820e" }
+librespot-protocol = { git = "https://github.com/Andromeadus/librespot", rev = "dfd287182fbd270b719df44cd71c2b63c8a3820e" }

@@ -907,6 +907,11 @@ pub enum Command {
         session_generation: u64,
         audiobooks: Vec<String>,
     },
+    /// Internal: the account's offline downloads were opened.
+    OfflineRestored {
+        session_generation: u64,
+        downloads: Option<Arc<crate::offline::Downloads>>,
+    },
     /// Internal: one playlist header read finished for the session and
     /// engine it started on. `None` when the session could not read it.
     PlaylistHeaderResolved {
@@ -1787,6 +1792,8 @@ struct Worker {
     commands: mpsc::UnboundedSender<Command>,
     waker: Waker,
     engine: Option<Arc<Engine>>,
+    /// Downloaded songs, handed to every engine's player.
+    offline: Option<Arc<crate::offline::Downloads>>,
     /// What the engine is heard at, so the engine that replaces it starts
     /// there. `engine_config` alone knows only the level the app launched
     /// with.
@@ -1908,6 +1915,7 @@ impl Worker {
             commands,
             waker,
             engine: None,
+            offline: None,
             heard: None,
             rootlist_pending: false,
             album_type_lookup: AlbumTypeLookup::default(),
@@ -2742,6 +2750,17 @@ impl Worker {
                         });
                     }
                 }
+                Command::OfflineRestored {
+                    session_generation,
+                    downloads,
+                } => {
+                    if session_generation == *self.session.borrow() {
+                        if let Some(engine) = &self.engine {
+                            engine.set_offline(downloads.clone());
+                        }
+                        self.offline = downloads;
+                    }
+                }
                 Command::AudiobookShowsResolved {
                     session_generation,
                     audiobooks,
@@ -2824,6 +2843,26 @@ impl Worker {
                 });
             });
         }
+        self.restore_offline();
+    }
+
+    fn restore_offline(&self) {
+        let credentials = self.credentials.clone();
+        let dirs = self.dirs.clone();
+        let session_generation = *self.session.borrow();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let downloads = crate::offline::restore(&credentials, &dirs)
+                .await
+                .unwrap_or_else(|error| {
+                    log::warn!("unable to open the offline downloads: {error:#}");
+                    None
+                });
+            let _ = commands.send(Command::OfflineRestored {
+                session_generation,
+                downloads,
+            });
+        });
     }
 
     fn on_credentials_restored(
@@ -3251,6 +3290,7 @@ impl Worker {
         self.pending_playback_grant = None;
         self.engine_busy = false;
         self.premium = None;
+        self.offline = None;
         self.resume = None;
         self.resume_verify = None;
         self.waiting_for_network = false;
@@ -3777,6 +3817,7 @@ impl Worker {
                     self.resume_verify = Some((spec, 0));
                     self.schedule_resume_check(1_500);
                 }
+                engine.set_offline(self.offline.clone());
                 self.engine = Some(engine);
                 self.start_rootlist();
                 self.reconnects.clear();

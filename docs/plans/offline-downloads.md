@@ -18,9 +18,8 @@ only playable inside Spotifast.
 - 30-day check-in: downloads stop playing 30 days after the last successful
   online sign-in.
 - Signing out deletes every download, the sealed keys and the master key.
-- librespot changes live in a local clone at `../librespot` (branch
-  `offline`, from crmne/librespot 8c68baf), wired in with a Cargo path
-  patch. Publish it as a GitHub fork once it works.
+- librespot changes live on github.com/Andromeadus/librespot, branch
+  `offline`, started from crmne/librespot 8c68baf (published 2026-10-22).
 
 ## Running the dev build
 
@@ -80,5 +79,16 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
   HOME=$PWD/target/dev-home TMPDIR=$PWD/target/dev-home/tmp/ cargo run --example offline_probe -- spotify:track:4uLU6hMCjMI75M1A2tKUQC
   ```
 
+- Step 2 done: librespot `offline` branch adds `OfflineTracks` and
+  `Player::set_offline_tracks`; the player asks it before the network,
+  online or not. The backend opens the store when it restores sign-ins
+  and hands it to every engine. A song is kept under the URI asked for and
+  the one Spotify relinks it to, since the app plays the relinked one.
+- Known gap: the store opens once at startup. If the keychain does not
+  answer within 20 s (a locked keychain, or macOS asking about a rebuilt
+  binary), downloads stay closed until the next start. Retry in step 5.
+- librespot comes from github.com/Andromeadus/librespot, branch `offline`,
+  pinned by commit in `Cargo.toml`. The local clone at `../librespot` has
+  that branch with a `fork` remote: commit there, push, then bump the rev.
 - `packaging/test-launchers.py` fails on macOS (GNU `install -D` and
   `sed -i`); it is a Linux packaging check.

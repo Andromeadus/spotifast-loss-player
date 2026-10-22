@@ -2,7 +2,8 @@
 """Fails when a dependency comes from a source the maintainer does not control.
 
 Crates come from crates.io. A git dependency or a [patch] entry may only name
-a repository under https://github.com/crmne/, and adding or changing one needs
+a repository under https://github.com/crmne/ or, in this fork,
+https://github.com/Andromeadus/, and adding or changing one needs
 the maintainer's approval (CONTRIBUTING.md, "Pull requests"). This reads every
 tracked Cargo.toml, Cargo.lock and .cargo/config.toml.
 """
@@ -18,18 +19,21 @@ CRATES_IO = {
     "registry+https://github.com/rust-lang/crates.io-index",
     "sparse+https://index.crates.io/",
 }
+# crmne maintains Spotifast; Andromeadus maintains this fork and its
+# librespot fork (docs/plans/offline-downloads.md).
+OWNERS = ("crmne", "Andromeadus")
 MANIFESTS = ("/Cargo.toml", "/Cargo.lock", "/.cargo/config.toml", "/.cargo/config")
 
 
 def owned(url):
-    """True for https://github.com/crmne/<repository> and nothing else."""
+    """True for https://github.com/<owner>/<repository> with an owner in OWNERS."""
     parts = urlsplit(url)
     segments = parts.path.strip("/").removesuffix(".git").split("/")
     return (
         parts.scheme == "https"
         and parts.netloc == "github.com"
         and len(segments) == 2
-        and segments[0] == "crmne"
+        and segments[0] in OWNERS
         and segments[1] not in ("", ".", "..")
         and "%" not in parts.path
     )
@@ -73,7 +77,7 @@ def problems(files):
                 found.append((path, f"{table} points at {url}"))
         for section, crate, spec in replacements(data):
             if not (isinstance(spec, dict) and "git" in spec):
-                found.append((path, f"[{section}] {crate} must name a git repository under https://github.com/crmne/"))
+                found.append((path, f"[{section}] {crate} must name a git repository under {' or '.join(f'https://github.com/{o}/' for o in OWNERS)}"))
         for section in ("source", "registries"):
             if section in data:
                 found.append((path, f"[{section}] adds a crate source besides crates.io"))
@@ -92,7 +96,8 @@ def main():
         print(f"::error file={path}::{message}" if os.environ.get("GITHUB_ACTIONS") else f"{path}: {message}")
     if found:
         print(
-            "Dependencies come from crates.io or from repositories under https://github.com/crmne/. "
+            "Dependencies come from crates.io or from repositories under https://github.com/crmne/ "
+            "or https://github.com/Andromeadus/. "
             "Send a dependency fix upstream and ask the maintainer to carry it; see CONTRIBUTING.md."
         )
     return 1 if found else 0

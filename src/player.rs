@@ -34,7 +34,7 @@ use librespot_playback::{
     audio_backend::Sink,
     config::{Bitrate, NormalisationType, PlayerConfig, VolumeCtrl},
     mixer::{self, Mixer, MixerConfig, NoOpVolume, VolumeGetter},
-    player::{Player, PlayerEvent},
+    player::{OfflineTracks, Player, PlayerEvent},
 };
 use sha1::{Digest, Sha1};
 
@@ -602,6 +602,12 @@ impl Engine {
 
     pub fn device_id(&self) -> &str {
         &self.device_id
+    }
+
+    /// Songs the player plays from disk before asking the network.
+    pub fn set_offline(&self, downloads: Option<Arc<crate::offline::Downloads>>) {
+        self.player
+            .set_offline_tracks(downloads.map(|d| d as Arc<dyn OfflineTracks>));
     }
 
     /// What this engine is heard at, kept past the engine itself: the next

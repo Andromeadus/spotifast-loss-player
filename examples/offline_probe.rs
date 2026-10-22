@@ -45,15 +45,18 @@ fn main() -> anyhow::Result<()> {
     let dir = offline::dir(&dirs);
     let mut store = Store::open(dir.clone(), &key)?;
     for uri in &uris {
-        let (track, encrypted) = runtime.block_on(offline::fetch(&session, uri))?;
+        let fetched = runtime.block_on(offline::fetch(&session, uri))?;
+        let track = &fetched.track;
+        let artists: Vec<_> = track.artists.iter().map(|a| a.name.as_str()).collect();
         println!(
-            "{uri}: {} by {} at {} kbps, {} bytes encrypted",
+            "{}: {} by {} at {} kbps, {} bytes encrypted",
+            fetched.uris.join(" = "),
             track.name,
-            track.artists.join(", "),
+            artists.join(", "),
             track.kbps,
-            encrypted.len()
+            fetched.encrypted.len()
         );
-        store.add(uri, track, &encrypted)?;
+        store.add(fetched)?;
     }
 
     let store = Store::open(dir.clone(), &key)?;

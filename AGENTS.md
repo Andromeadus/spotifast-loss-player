@@ -38,7 +38,10 @@ These instructions add implementation constraints for coding agents.
   to be carried. Use the fork until a release includes the fix; do not copy
   dependency source into this repository. Never point a dependency at any other
   fork or source (see Pull requests below):
-  `.github/scripts/check-dependency-sources.py` fails CI on one.
+  `.github/scripts/check-dependency-sources.py` fails CI on one. This fork
+  (Andromeadus/spotifast-loss-player) also takes librespot from
+  `github.com/Andromeadus/librespot`, branch `offline`, for offline
+  downloads (`docs/plans/offline-downloads.md`); the check allows that owner.
 - egui and winit come from forks shared with ZapFast, RekordFlash and TonePush
   (crmne/egui apps-0.36.2, crmne/winit apps-0.30); move all their crates to a
   new revision together. On Wayland, eframe from that fork paces frames by

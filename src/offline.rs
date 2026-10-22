@@ -8,11 +8,15 @@
 use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context as _, anyhow, bail};
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_core::{FileId, Session, SpotifyUri, audio_key::AudioKey, spotify_id::SpotifyId};
+use librespot_metadata::artist::{ArtistWithRole, ArtistsWithRole};
+use librespot_metadata::audio::item::CoverImage;
 use librespot_metadata::audio::{AudioFileFormat, AudioItem, UniqueFields};
+use librespot_playback::player::{OfflineTrack, OfflineTracks};
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -38,10 +42,70 @@ pub struct Track {
     pub kbps: u16,
     pub audio_key: [u8; 16],
     pub name: String,
-    pub artists: Vec<String>,
+    pub artists: Vec<Artist>,
     pub album: String,
     pub duration_ms: u32,
+    pub explicit: bool,
     pub cover: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Artist {
+    pub uri: String,
+    pub name: String,
+}
+
+impl Track {
+    fn format(&self) -> AudioFileFormat {
+        FORMATS
+            .iter()
+            .find(|(_, kbps)| *kbps == self.kbps)
+            .map_or(AudioFileFormat::OGG_VORBIS_320, |(format, _)| *format)
+    }
+
+    /// The details librespot's player reports while the song plays.
+    fn audio_item(&self, uri: &SpotifyUri) -> AudioItem {
+        AudioItem {
+            track_id: uri.clone(),
+            uri: uri.to_uri(),
+            files: Default::default(),
+            name: self.name.clone(),
+            covers: self
+                .cover
+                .iter()
+                .map(|url| CoverImage {
+                    url: url.clone(),
+                    size: Default::default(),
+                    width: 0,
+                    height: 0,
+                })
+                .collect(),
+            language: Vec::new(),
+            duration_ms: self.duration_ms,
+            is_explicit: self.explicit,
+            availability: Ok(()),
+            alternatives: None,
+            unique_fields: UniqueFields::Track {
+                artists: ArtistsWithRole(
+                    self.artists
+                        .iter()
+                        .filter_map(|artist| {
+                            Some(ArtistWithRole {
+                                id: SpotifyUri::from_uri(&artist.uri).ok()?,
+                                name: artist.name.clone(),
+                                role: Default::default(),
+                            })
+                        })
+                        .collect(),
+                ),
+                album: self.album.clone(),
+                album_artists: Vec::new(),
+                popularity: 0,
+                number: 0,
+                disc_number: 0,
+            },
+        }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -97,13 +161,20 @@ impl Store {
         self.dir.join(&track.file)
     }
 
-    /// Keeps a song: the encrypted file first, then the index that points
-    /// at it, so a crash between them leaves an unlisted file, never a
-    /// listed song without one.
-    pub fn add(&mut self, uri: &str, track: Track, encrypted: &[u8]) -> anyhow::Result<()> {
+    /// Keeps a song under each of its URIs: the encrypted file first, then
+    /// the index that points at it, so a crash between them leaves an
+    /// unlisted file, never a listed song without one.
+    pub fn add(&mut self, fetched: Fetched) -> anyhow::Result<()> {
+        let Fetched {
+            uris,
+            track,
+            encrypted,
+        } = fetched;
         fastframe_file::write(&self.dir.join(&track.file), encrypted)
             .context("unable to save the downloaded song")?;
-        self.index.tracks.insert(uri.to_owned(), track);
+        for uri in uris {
+            self.index.tracks.insert(uri, track.clone());
+        }
         self.save()
     }
 
@@ -112,6 +183,40 @@ impl Store {
         fastframe_file::write_private(&self.dir.join(INDEX_FILE), seal(&self.key, json)?)
             .context("unable to save the offline index")
     }
+}
+
+/// The store as the player reads it, shared with the downloads that fill it.
+pub struct Downloads(pub RwLock<Store>);
+
+impl OfflineTracks for Downloads {
+    fn get(&self, uri: &SpotifyUri) -> Option<OfflineTrack> {
+        let store = self.0.read().unwrap_or_else(|p| p.into_inner());
+        let track = store.get(&uri.to_uri())?;
+        Some(OfflineTrack {
+            audio_item: track.audio_item(uri),
+            format: track.format(),
+            path: store.file_path(track),
+            key: AudioKey(track.audio_key),
+        })
+    }
+}
+
+/// Opens this account's downloads, if any were ever made: without an
+/// offline key there is nothing to open.
+pub async fn restore(
+    credentials: &crate::credentials::Store,
+    dirs: &crate::paths::AppDirs,
+) -> anyhow::Result<Option<Arc<Downloads>>> {
+    let loaded = credentials
+        .lease(crate::credentials::Slot::Offline)
+        .load()
+        .await?;
+    let Some(crate::credentials::Grant::Offline(key)) = loaded.grant else {
+        return Ok(None);
+    };
+    let dir = dir(dirs);
+    let store = tokio::task::spawn_blocking(move || Store::open(dir, &key)).await??;
+    Ok(Some(Arc::new(Downloads(RwLock::new(store)))))
 }
 
 fn seal(key: &LessSafeKey, mut data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
@@ -143,9 +248,18 @@ fn unseal(key: &LessSafeKey, mut sealed: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     Ok(data)
 }
 
+/// A song fetched for keeping.
+pub struct Fetched {
+    /// The URI asked for and, when Spotify relinked it to the version this
+    /// account's market plays, that version's too: either may be played.
+    pub uris: Vec<String>,
+    pub track: Track,
+    pub encrypted: Vec<u8>,
+}
+
 /// Fetches a song's encrypted file and audio key over `session`. The key
 /// is checked against the file before anything is kept.
-pub async fn fetch(session: &Session, uri: &str) -> anyhow::Result<(Track, Vec<u8>)> {
+pub async fn fetch(session: &Session, uri: &str) -> anyhow::Result<Fetched> {
     let spotify_uri = SpotifyUri::from_uri(uri)?;
     let track_id: SpotifyId = (&spotify_uri).try_into()?;
     let item = playable(session, AudioItem::get_file(session, spotify_uri).await?).await?;
@@ -162,7 +276,13 @@ pub async fn fetch(session: &Session, uri: &str) -> anyhow::Result<(Track, Vec<u
 
     let (artists, album) = match &item.unique_fields {
         UniqueFields::Track { artists, album, .. } => (
-            artists.iter().map(|artist| artist.name.clone()).collect(),
+            artists
+                .iter()
+                .map(|artist| Artist {
+                    uri: artist.id.to_uri(),
+                    name: artist.name.clone(),
+                })
+                .collect(),
             album.clone(),
         ),
         _ => (Vec::new(), String::new()),
@@ -180,9 +300,18 @@ pub async fn fetch(session: &Session, uri: &str) -> anyhow::Result<(Track, Vec<u
         artists,
         album,
         duration_ms: item.duration_ms,
+        explicit: item.is_explicit,
         cover,
     };
-    Ok((track, encrypted))
+    let mut uris = vec![uri.to_owned()];
+    if item.uri != uri {
+        uris.push(item.uri);
+    }
+    Ok(Fetched {
+        uris,
+        track,
+        encrypted,
+    })
 }
 
 /// The item itself, or the first available relinked alternative, as
@@ -241,10 +370,22 @@ mod tests {
             kbps: 320,
             audio_key: [3; 16],
             name: "Song".into(),
-            artists: vec!["Artist".into()],
+            artists: vec![Artist {
+                uri: "spotify:artist:0000000000000000000001".into(),
+                name: "Artist".into(),
+            }],
             album: "Album".into(),
             duration_ms: 1000,
-            cover: None,
+            explicit: false,
+            cover: Some("https://i.scdn.co/image/cover".into()),
+        }
+    }
+
+    fn kept(uri: &str, encrypted: &[u8]) -> Fetched {
+        Fetched {
+            uris: vec![uri.into()],
+            track: track("ab12"),
+            encrypted: encrypted.to_vec(),
         }
     }
 
@@ -260,9 +401,7 @@ mod tests {
         let dir = temp_dir("offline-reopen");
         let key = Store::new_key().unwrap();
         let mut store = Store::open(dir.clone(), &key).unwrap();
-        store
-            .add("spotify:track:a", track("ab12"), b"encrypted")
-            .unwrap();
+        store.add(kept("spotify:track:a", b"encrypted")).unwrap();
 
         let store = Store::open(dir.clone(), &key).unwrap();
         let kept = store.get("spotify:track:a").unwrap();
@@ -275,12 +414,43 @@ mod tests {
     fn the_index_is_sealed_and_a_wrong_key_does_not_open_it() {
         let dir = temp_dir("offline-sealed");
         let mut store = Store::open(dir.clone(), &Store::new_key().unwrap()).unwrap();
-        store.add("spotify:track:a", track("ab12"), b"x").unwrap();
+        store.add(kept("spotify:track:a", b"x")).unwrap();
 
         let sealed = std::fs::read(dir.join(INDEX_FILE)).unwrap();
         let text = String::from_utf8_lossy(&sealed);
         assert!(!text.contains("ab12") && !text.contains("Song"));
         assert!(Store::open(dir.clone(), &Store::new_key().unwrap()).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_player_finds_a_kept_song_by_uri() {
+        let dir = temp_dir("offline-player");
+        let mut store = Store::open(dir.clone(), &Store::new_key().unwrap()).unwrap();
+        let uri = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+        let relinked = "spotify:track:0yNttAVwMr39qyODHNIkrY";
+        store
+            .add(Fetched {
+                uris: vec![uri.into(), relinked.into()],
+                track: track("ab12"),
+                encrypted: b"x".to_vec(),
+            })
+            .unwrap();
+        let downloads = Downloads(RwLock::new(store));
+
+        let found = downloads.get(&SpotifyUri::from_uri(uri).unwrap()).unwrap();
+        assert_eq!(found.path, dir.join("ab12"));
+        assert_eq!(found.key.0, [3; 16]);
+        assert_eq!(found.format, AudioFileFormat::OGG_VORBIS_320);
+        assert_eq!(found.audio_item.uri, uri);
+        let UniqueFields::Track { artists, .. } = &found.audio_item.unique_fields else {
+            panic!("a song");
+        };
+        assert_eq!(artists[0].name, "Artist");
+        let relinked = SpotifyUri::from_uri(relinked).unwrap();
+        assert_eq!(downloads.get(&relinked).unwrap().path, dir.join("ab12"));
+        let other = SpotifyUri::from_uri("spotify:track:0000000000000000000002").unwrap();
+        assert!(downloads.get(&other).is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
