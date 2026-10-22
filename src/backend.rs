@@ -2884,7 +2884,7 @@ impl Worker {
                     }
                 }
             }
-            None | Some(StoredGrant::Proxy(_)) => {}
+            None | Some(StoredGrant::Proxy(_) | StoredGrant::Offline(_)) => {}
         }
         if slot == CredentialSlot::Playback {
             self.start_prerelease();

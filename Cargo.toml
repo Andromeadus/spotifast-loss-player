@@ -132,6 +132,8 @@ raw-window-handle = "0.6"
 # same stack as the rest of the client. SOCKS5 still covers the Web API but
 # not the engine: librespot only speaks HTTP CONNECT.
 librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+# Offline downloads read the encrypted file and decrypt it (src/offline.rs).
+librespot-audio = { version = "0.8", default-features = false }
 librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-connect = { version = "0.8", default-features = false }
 librespot-metadata = { version = "0.8", default-features = false }
