@@ -185,8 +185,11 @@ librespot provides:
   connects, every download is read again, so songs added since are fetched
   and songs removed since are deleted. librespot's player plays a kept song
   from disk before asking the network, through the fork's `offline`
-  branch (Andromeadus/librespot). Playing with no network at all is not
-  finished yet; see `docs/plans/offline-downloads.md`.
+  branch (Andromeadus/librespot). With no network, on macOS, downloaded
+  songs play on a player of their own: a kept playlist or album opens as
+  its downloaded songs, and play, pause, skip, seek, shuffle and repeat
+  work, but the queue cannot be changed. When the network returns, Spotify
+  Connect carries the song on. See `docs/plans/offline-downloads.md`.
 
 Spotify Premium is required. librespot cannot play audio with a free account.
 

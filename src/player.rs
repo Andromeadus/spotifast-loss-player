@@ -310,6 +310,9 @@ pub enum PlayerCommand {
 pub enum EngineEvent {
     State(LocalState),
     SessionEnded,
+    /// The song played to its end. Spotify Connect moves on by itself; the
+    /// offline player, which has no Connect, is moved on by the backend.
+    TrackEnded,
     /// The output opened on the device an older build saved by `name`;
     /// the setting holds its `id` from now on.
     AudioDevice {
@@ -364,6 +367,39 @@ impl KeptPlayer {
         true
     }
 
+    /// Plays `uri` from `position_ms`, or holds it paused there.
+    pub fn load(&self, uri: &str, position_ms: u32, play: bool) -> Result<()> {
+        self.player
+            .load(SpotifyUri::from_uri(uri)?, play, position_ms);
+        Ok(())
+    }
+
+    pub fn seek(&self, position_ms: u32) {
+        self.player.seek(position_ms);
+    }
+
+    pub fn set_volume(&self, volume: u16) {
+        self.mixer.set_volume(volume);
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).volume = volume;
+    }
+
+    /// Where the song is now, in milliseconds.
+    pub fn position_ms(&self) -> u32 {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .position_now()
+    }
+
+    /// Shows the shuffle and repeat the offline player plays with, which
+    /// Spotify Connect would otherwise report; answers the state to send.
+    pub fn set_modes(&self, shuffle: bool, repeat: RepeatMode) -> LocalState {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.shuffle = shuffle;
+        state.repeat = repeat;
+        state.clone()
+    }
+
     /// Whether the player still has a song, playing or paused.
     pub fn has_song(&self) -> bool {
         self.now().is_some()
@@ -371,7 +407,7 @@ impl KeptPlayer {
 
     /// Where the song is now and whether it plays, or `None` once the
     /// player has nothing left.
-    fn now(&self) -> Option<Interrupted> {
+    pub fn now(&self) -> Option<Interrupted> {
         self.state
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -494,6 +530,30 @@ impl Engine {
             closing,
             audio,
             carrying: std::sync::atomic::AtomicBool::new(carrying),
+        })
+    }
+
+    /// A player with no Spotify session, for downloaded songs while there is
+    /// no network: librespot plays them from disk without one.
+    pub fn offline_player(
+        config: &EngineConfig,
+        notify: &Notify,
+        downloads: Arc<crate::offline::Downloads>,
+    ) -> Result<KeptPlayer> {
+        let session = Session::new(
+            SessionConfig {
+                device_id: config.device_id(),
+                ..SessionConfig::default()
+            },
+            None,
+        );
+        let (player, mixer, state, audio) = Self::start_player(config, &session, notify)?;
+        player.set_offline_tracks(Some(downloads as Arc<dyn OfflineTracks>));
+        Ok(KeptPlayer {
+            player,
+            mixer,
+            state,
+            audio,
         })
     }
 
@@ -944,6 +1004,7 @@ async fn run_events(
             continue;
         }
         audio.handle_player_event(&event);
+        let ended = matches!(event, PlayerEvent::EndOfTrack { .. });
         let snapshot = {
             let mut current = state.lock().unwrap_or_else(|p| p.into_inner());
             if apply_event(&mut current, event) {
@@ -954,6 +1015,9 @@ async fn run_events(
         };
         if let Some(snapshot) = snapshot {
             notify(EngineEvent::State(snapshot));
+        }
+        if ended {
+            notify(EngineEvent::TrackEnded);
         }
     }
 }

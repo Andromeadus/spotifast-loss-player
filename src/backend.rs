@@ -27,7 +27,8 @@ use crate::images::{ArtLoader, art_palette};
 use crate::model::PlaylistCache;
 use crate::paths::AppDirs;
 use crate::player::{
-    Engine, EngineConfig, EngineEvent, Heard, KeptPlayer, LocalState, PlaybackResume, PlayerCommand,
+    Engine, EngineConfig, EngineEvent, Heard, KeptPlayer, LoadSpec, LocalState, PlaybackResume,
+    PlayerCommand, RepeatMode,
 };
 use crate::session_reads;
 use crate::settings::ProxyConfig;
@@ -785,6 +786,8 @@ pub enum Command {
     NetworkStatus(bool),
     /// Internal: librespot's session ended on its own.
     Reconnect,
+    /// Internal: the offline player's song played to its end.
+    OfflineTrackEnded,
     /// Internal: the backoff after a failed engine connection has passed.
     RetryEngine {
         generation: u64,
@@ -911,6 +914,7 @@ pub enum Command {
     SetDownload {
         context: String,
         on: bool,
+        name: Option<crate::offline::Name>,
     },
     /// Internal: the running download reached another song.
     DownloadProgress(DownloadProgress),
@@ -960,6 +964,8 @@ pub struct DownloadsState {
     /// Every song URI that plays from disk.
     pub tracks: BTreeSet<String>,
     pub progress: Option<DownloadProgress>,
+    /// Each kept playlist and album with its songs on this computer.
+    pub lists: Arc<Vec<crate::offline::KeptList>>,
 }
 
 /// The download running.
@@ -1593,8 +1599,8 @@ impl Backend {
     }
 
     /// Keep a playlist or album on this computer, or stop keeping it.
-    pub fn set_download(&self, context: String, on: bool) {
-        self.send(Command::SetDownload { context, on });
+    pub fn set_download(&self, context: String, on: bool, name: Option<crate::offline::Name>) {
+        self.send(Command::SetDownload { context, on, name });
     }
 
     /// Whether the system says the internet can be reached. Without it the
@@ -1836,6 +1842,10 @@ struct Worker {
     engine: Option<Arc<Engine>>,
     /// Downloaded songs, handed to every engine's player.
     offline: Option<Arc<crate::offline::Downloads>>,
+    /// Downloaded songs playing while there is no engine.
+    offline_playback: Option<OfflinePlayback>,
+    /// What was last asked to play, for the offline player to carry on with.
+    last_load: Option<LoadSpec>,
     /// Playlists and albums waiting to download, oldest first.
     download_queue: VecDeque<String>,
     /// The one download running, and the flag that stops it.
@@ -1843,6 +1853,8 @@ struct Worker {
     download_progress: Option<DownloadProgress>,
     /// Turned off and still being removed from the store.
     download_removing: BTreeSet<String>,
+    /// The name and cover a download was turned on with, until it starts.
+    download_names: std::collections::HashMap<String, crate::offline::Name>,
     /// What the engine is heard at, so the engine that replaces it starts
     /// there. `engine_config` alone knows only the level the app launched
     /// with.
@@ -1965,10 +1977,13 @@ impl Worker {
             waker,
             engine: None,
             offline: None,
+            offline_playback: None,
+            last_load: None,
             download_queue: VecDeque::new(),
             download_running: None,
             download_progress: None,
             download_removing: BTreeSet::new(),
+            download_names: Default::default(),
             heard: None,
             rootlist_pending: false,
             album_type_lookup: AlbumTypeLookup::default(),
@@ -2334,9 +2349,13 @@ impl Worker {
                     self.change_proxy(request, config, false)
                 }
                 Command::Player(command) => {
-                    if matches!(&command, PlayerCommand::Load(_)) {
+                    if let PlayerCommand::Load(spec) = &command {
                         self.resume = None;
+                        self.last_load = Some(spec.clone());
                     }
+                    let offline_handled = self.engine.is_none()
+                        && !(command == PlayerCommand::Toggle && self.kept_player.is_some())
+                        && self.play_offline(&command);
                     match &self.engine {
                         // Until the new session picks the song up, it has
                         // nothing to pause: the player does it (#268).
@@ -2353,6 +2372,9 @@ impl Worker {
                         // pauses and plays on its own player (#268).
                         None if command == PlayerCommand::Toggle
                             && self.kept_player.as_ref().is_some_and(KeptPlayer::toggle) => {}
+                        // With no engine, downloaded songs play on a player
+                        // of their own.
+                        None if offline_handled => {}
                         None => {
                             if matches!(&command, PlayerCommand::Load(_)) {
                                 // Something else chosen: the old song stops.
@@ -2519,6 +2541,14 @@ impl Worker {
                     self.emit(Event::NetworkStatus(reachable));
                     if !reachable {
                         self.waiting_for_network = true;
+                        // Spotify Connect takes a while to notice, waiting on
+                        // the network meanwhile, so its controls stop
+                        // answering: end it now, as a dropped session ends,
+                        // and play a downloaded song on from disk.
+                        if self.offline.is_some() && self.engine.is_some() {
+                            self.reconnect_engine();
+                            self.continue_offline();
+                        }
                     } else if self.engine.is_some() {
                         self.waiting_for_network = false;
                     } else if self.waiting_for_network && !self.engine_busy {
@@ -2819,7 +2849,13 @@ impl Worker {
                         self.emit_downloads();
                     }
                 }
-                Command::SetDownload { context, on } => self.set_download(context, on),
+                Command::OfflineTrackEnded => self.offline_track_ended(),
+                Command::SetDownload { context, on, name } => {
+                    if let Some(name) = name {
+                        self.download_names.insert(context.clone(), name);
+                    }
+                    self.set_download(context, on);
+                }
                 Command::DownloadProgress(progress) => {
                     if self
                         .download_running
@@ -2937,6 +2973,138 @@ impl Worker {
         self.restore_offline();
     }
 
+    /// Plays a command on the offline player: a load of downloaded songs
+    /// starts it. False when there is nothing offline to play it on.
+    fn play_offline(&mut self, command: &PlayerCommand) -> bool {
+        let Some(downloads) = self.offline.clone() else {
+            return false;
+        };
+        if let PlayerCommand::Load(spec) = command {
+            self.load_offline(spec, &downloads);
+            return true;
+        }
+        let Some(offline) = self.offline_playback.as_mut() else {
+            return false;
+        };
+        let mut modes = None;
+        let result = match command {
+            PlayerCommand::Toggle => {
+                offline.player.toggle();
+                Ok(())
+            }
+            PlayerCommand::Next => offline.next(),
+            PlayerCommand::Previous => offline.previous(),
+            PlayerCommand::Seek(position_ms) => {
+                offline.player.seek(*position_ms);
+                Ok(())
+            }
+            PlayerCommand::Volume(volume) | PlayerCommand::VolumePreview(volume) => {
+                offline.player.set_volume(*volume);
+                Ok(())
+            }
+            PlayerCommand::Shuffle(on) => {
+                offline.set_shuffle(*on);
+                modes = Some(offline.player.set_modes(offline.shuffle, offline.repeat));
+                Ok(())
+            }
+            PlayerCommand::Repeat(mode) => {
+                offline.repeat = *mode;
+                modes = Some(offline.player.set_modes(offline.shuffle, offline.repeat));
+                Ok(())
+            }
+            PlayerCommand::AddToQueue(_) | PlayerCommand::ClearQueue | PlayerCommand::Transfer => {
+                Err(anyhow::anyhow!("The queue can't be changed while offline"))
+            }
+            PlayerCommand::Load(_) => unreachable!("handled above"),
+        };
+        if let Some(state) = modes {
+            self.emit(Event::Local(Box::new(state)));
+        }
+        if let Err(error) = result {
+            self.emit(Event::Error(error.to_string()));
+        }
+        true
+    }
+
+    /// Starts the downloaded songs a load names: its own list, or a kept
+    /// playlist's or album's, at the song it chose.
+    fn load_offline(&mut self, spec: &LoadSpec, downloads: &Arc<crate::offline::Downloads>) {
+        let (listed, start) =
+            offline_queue(spec, &downloads.0.read().unwrap_or_else(|p| p.into_inner()));
+        if listed.is_empty() {
+            self.emit(Event::Error(
+                "Only downloaded songs play while offline".into(),
+            ));
+            return;
+        }
+        let (shuffle, repeat, player) = match self.offline_playback.take() {
+            Some(offline) => (offline.shuffle, offline.repeat, offline.player),
+            None => match Engine::offline_player(
+                &self.engine_config,
+                &self.engine_notify(),
+                Arc::clone(downloads),
+            ) {
+                Ok(player) => (false, RepeatMode::Off, player),
+                Err(error) => {
+                    self.emit(Event::Error(format!("Offline playback failed: {error:#}")));
+                    return;
+                }
+            },
+        };
+        // A song a dropped session left playing gives way.
+        self.stop_kept_player();
+        let mut offline = OfflinePlayback {
+            player,
+            context: spec.context_uri.clone(),
+            order: listed.clone(),
+            listed,
+            index: start,
+            shuffle: false,
+            repeat: spec.repeat.unwrap_or(repeat),
+        };
+        offline.set_shuffle(spec.shuffle.unwrap_or(shuffle));
+        if let Err(error) = offline.play(offline.index, spec.position_ms, spec.play) {
+            self.emit(Event::Error(format!("Offline playback failed: {error:#}")));
+        }
+        self.emit(Event::Local(Box::new(
+            offline.player.set_modes(offline.shuffle, offline.repeat),
+        )));
+        self.offline_playback = Some(offline);
+    }
+
+    /// Moves the song a dropped session left playing onto the offline
+    /// player, where it had got to, when it is downloaded.
+    fn continue_offline(&mut self) {
+        let (Some(downloads), Some(now)) = (
+            self.offline.clone(),
+            self.kept_player.as_ref().and_then(KeptPlayer::now),
+        ) else {
+            return;
+        };
+        let spec = offline_takeover(
+            &now,
+            self.last_load.as_ref(),
+            &downloads.0.read().unwrap_or_else(|p| p.into_inner()),
+        );
+        if let Some(spec) = spec {
+            self.load_offline(&spec, &downloads);
+        }
+    }
+
+    fn offline_track_ended(&mut self) {
+        let Some(offline) = self.offline_playback.as_mut() else {
+            return;
+        };
+        let result = if offline.repeat == RepeatMode::Track {
+            offline.play(offline.index, 0, true)
+        } else {
+            offline.next()
+        };
+        if let Err(error) = result {
+            self.emit(Event::Error(format!("Offline playback failed: {error:#}")));
+        }
+    }
+
     /// What the app shows of the downloads, sent after every change.
     fn emit_downloads(&self) {
         let summary = self
@@ -2962,6 +3130,7 @@ impl Worker {
             contexts,
             tracks: summary.tracks,
             progress: self.download_progress.clone(),
+            lists: summary.lists,
         }));
     }
 
@@ -3049,6 +3218,7 @@ impl Worker {
             credentials: self.credentials.clone(),
             dirs: self.dirs.clone(),
             downloads: self.offline.clone(),
+            name: self.download_names.remove(&context),
             session_generation: *self.session.borrow(),
             commands: self.commands.clone(),
         };
@@ -3065,14 +3235,16 @@ impl Worker {
         let credentials = self.credentials.clone();
         let dirs = self.dirs.clone();
         let session_generation = *self.session.borrow();
+        let generation = self.session.subscribe();
         let commands = self.commands.clone();
         tokio::spawn(async move {
-            let downloads = crate::offline::restore(&credentials, &dirs)
-                .await
-                .unwrap_or_else(|error| {
-                    log::warn!("unable to open the offline downloads: {error:#}");
-                    None
-                });
+            let downloads = until_answered(
+                || crate::offline::restore(&credentials, &dirs),
+                generation,
+                Duration::from_secs(5),
+            )
+            .await
+            .flatten();
             let _ = commands.send(Command::OfflineRestored {
                 session_generation,
                 downloads,
@@ -3530,6 +3702,9 @@ impl Worker {
         self.pending_playback_grant = None;
         self.engine_busy = false;
         self.premium = None;
+        if let Some(offline) = self.offline_playback.take() {
+            offline.player.stop();
+        }
         self.offline = None;
         self.download_queue.clear();
         if let Some((_, stop)) = self.download_running.take() {
@@ -3595,6 +3770,9 @@ impl Worker {
                 }
                 EngineEvent::SessionEnded => {
                     let _ = commands.send(Command::Reconnect);
+                }
+                EngineEvent::TrackEnded => {
+                    let _ = commands.send(Command::OfflineTrackEnded);
                 }
                 EngineEvent::AudioDevice { name, id } => {
                     let _ = events.send(Event::AudioDeviceFound { name, id });
@@ -4053,6 +4231,14 @@ impl Worker {
                     });
                 }
                 let device_id = engine.device_id().to_string();
+                // Spotify Connect takes over what played offline, where it
+                // had got to.
+                if let Some(offline) = self.offline_playback.take() {
+                    offline.player.stop();
+                    if let Some(spec) = offline.handover() {
+                        self.resume = Some(PlaybackResume::Track(spec));
+                    }
+                }
                 // The engine plays the kept song on now.
                 self.kept_player = None;
                 let engine = Arc::new(engine);
@@ -8948,6 +9134,165 @@ mod authorization_tests {
     }
 
     #[test]
+    fn an_offline_load_plays_the_downloaded_songs_from_the_chosen_one() {
+        use crate::offline::{Fetched, Store, Track};
+        let dir =
+            std::env::temp_dir().join(format!("spotifast-offline-queue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::open(dir.clone(), &Store::new_key().unwrap()).unwrap();
+        let song = |name: &str| format!("spotify:track:{name}");
+        store
+            .set_context(
+                "spotify:album:x",
+                ["a", "b", "c", "d"].iter().map(|name| song(name)).collect(),
+            )
+            .unwrap();
+        for name in ["a", "c", "d"] {
+            store
+                .add(Fetched {
+                    uris: vec![song(name)],
+                    track: Track {
+                        file: format!("f{name}"),
+                        kbps: 320,
+                        audio_key: [0; 16],
+                        name: name.into(),
+                        artists: Vec::new(),
+                        album: String::new(),
+                        duration_ms: 1000,
+                        explicit: false,
+                        cover: None,
+                    },
+                    encrypted: b"x".to_vec(),
+                })
+                .unwrap();
+        }
+        // From the album, at a song not downloaded: the next one that is.
+        let album = LoadSpec {
+            context_uri: Some("spotify:album:x".into()),
+            offset_uri: Some(song("b")),
+            ..LoadSpec::default()
+        };
+        assert_eq!(
+            offline_queue(&album, &store),
+            (vec![song("a"), song("c"), song("d")], 1)
+        );
+        // A view's own order, with the songs not kept left out.
+        let view = LoadSpec {
+            uris: vec![song("d"), song("zz"), song("a")],
+            offset_uri: Some(song("a")),
+            ..LoadSpec::default()
+        };
+        assert_eq!(
+            offline_queue(&view, &store),
+            (vec![song("d"), song("a")], 1)
+        );
+        let one = LoadSpec {
+            context_uri: Some(song("c")),
+            ..LoadSpec::default()
+        };
+        assert_eq!(offline_queue(&one, &store), (vec![song("c")], 0));
+        let nothing = LoadSpec {
+            uris: vec![song("zz")],
+            ..LoadSpec::default()
+        };
+        assert!(offline_queue(&nothing, &store).0.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_downloads_open_once_the_credential_store_answers() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (generation, receiver) = watch::channel(0);
+        let mut asked = 0;
+        let opened = runtime.block_on(until_answered(
+            || {
+                asked += 1;
+                let answer = if asked < 3 {
+                    Err(anyhow::anyhow!("the credential store did not respond"))
+                } else {
+                    Ok("downloads")
+                };
+                async move { answer }
+            },
+            receiver.clone(),
+            Duration::from_millis(1),
+        ));
+        assert_eq!((opened, asked), (Some("downloads"), 3));
+
+        // Signing out stops the asking.
+        let mut asked = 0;
+        let opened: Option<()> = runtime.block_on(until_answered(
+            || {
+                asked += 1;
+                generation.send_replace(1);
+                async { Err(anyhow::anyhow!("locked")) }
+            },
+            receiver,
+            Duration::from_millis(1),
+        ));
+        assert_eq!((opened, asked), (None, 1));
+    }
+
+    #[test]
+    fn a_song_carries_on_offline_in_the_list_it_was_started_from() {
+        use crate::offline::{Fetched, Store, Track};
+        use crate::player::Interrupted;
+        let dir =
+            std::env::temp_dir().join(format!("spotifast-offline-takeover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::open(dir.clone(), &Store::new_key().unwrap()).unwrap();
+        let song = |name: &str| format!("spotify:track:{name}");
+        store
+            .set_context("spotify:album:x", vec![song("a"), song("b")])
+            .unwrap();
+        store
+            .add(Fetched {
+                uris: vec![song("b")],
+                track: Track {
+                    file: "fb".into(),
+                    kbps: 320,
+                    audio_key: [0; 16],
+                    name: "b".into(),
+                    artists: Vec::new(),
+                    album: String::new(),
+                    duration_ms: 1000,
+                    explicit: false,
+                    cover: None,
+                },
+                encrypted: b"x".to_vec(),
+            })
+            .unwrap();
+        let now = Interrupted {
+            uri: song("b"),
+            position_ms: 42_000,
+            playing: true,
+        };
+        let album = LoadSpec {
+            context_uri: Some("spotify:album:x".into()),
+            ..LoadSpec::default()
+        };
+        let spec = offline_takeover(&now, Some(&album), &store).unwrap();
+        assert_eq!(spec.context_uri.as_deref(), Some("spotify:album:x"));
+        assert_eq!(spec.offset_uri, Some(song("b")));
+        assert_eq!((spec.position_ms, spec.play), (42_000, true));
+        // Started some other way: the song alone.
+        let spec = offline_takeover(&now, None, &store).unwrap();
+        assert_eq!(spec.context_uri, Some(song("b")));
+        // A song not downloaded stays with the dropped session's player.
+        let streamed = Interrupted {
+            uri: song("a"),
+            ..now
+        };
+        assert!(offline_takeover(&streamed, Some(&album), &store).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn downloads_need_premium() {
         let (runtime, mut worker, events) = worker("download-premium");
         let _entered = runtime.enter();
@@ -9218,12 +9563,197 @@ mod authorization_tests {
     }
 }
 
+/// Asks `open` until it answers: the credential store can be locked, or
+/// waiting on the system to ask whether Spotifast may read it, longer than
+/// one request waits. Gives up, with `None`, once the account changes.
+async fn until_answered<T, F, Fut>(
+    mut open: F,
+    generation: watch::Receiver<u64>,
+    first_wait: Duration,
+) -> Option<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let started = *generation.borrow();
+    let mut wait = first_wait;
+    loop {
+        match open().await {
+            Ok(answer) => return Some(answer),
+            Err(error) => log::warn!(
+                "unable to open the offline downloads, asking again in {} s: {error:#}",
+                wait.as_secs()
+            ),
+        }
+        tokio::time::sleep(wait).await;
+        if *generation.borrow() != started {
+            return None;
+        }
+        wait = (wait * 2).min(Duration::from_secs(60));
+    }
+}
+
+/// The load that carries a song on offline from where it is: in the list
+/// it was started from when that list holds it, else on its own. `None`
+/// when the song is not downloaded.
+fn offline_takeover(
+    now: &crate::player::Interrupted,
+    last_load: Option<&LoadSpec>,
+    store: &crate::offline::Store,
+) -> Option<LoadSpec> {
+    store.get(&now.uri)?;
+    let mut spec = LoadSpec {
+        context_uri: Some(now.uri.clone()),
+        ..LoadSpec::default()
+    };
+    if let Some(last) = last_load {
+        let listed = last
+            .context_uri
+            .as_deref()
+            .and_then(|context| store.listed(context));
+        if listed.is_some_and(|listed| listed.contains(&now.uri)) {
+            spec.context_uri.clone_from(&last.context_uri);
+        } else if last.uris.contains(&now.uri) {
+            spec.context_uri = None;
+            spec.uris.clone_from(&last.uris);
+        }
+    }
+    Some(LoadSpec {
+        offset_uri: Some(now.uri.clone()),
+        position_ms: now.position_ms,
+        play: now.playing,
+        ..spec
+    })
+}
+
+/// The downloaded songs a load names, from its own list or a kept
+/// playlist's or album's, and where among them it starts: at the song it
+/// chose, or the first downloaded one after it.
+fn offline_queue(spec: &LoadSpec, store: &crate::offline::Store) -> (Vec<String>, usize) {
+    let all = match spec.context_uri.as_deref() {
+        _ if !spec.uris.is_empty() => spec.uris.clone(),
+        // A single song is loaded as a context of its own.
+        Some(song) if song.starts_with("spotify:track:") => vec![song.to_owned()],
+        Some(context) => store.listed(context).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let listed: Vec<String> = all
+        .iter()
+        .filter(|uri| store.get(uri).is_some())
+        .cloned()
+        .collect();
+    let chosen = spec
+        .offset_uri
+        .as_deref()
+        .and_then(|uri| all.iter().position(|song| song == uri))
+        .or_else(|| spec.offset_index.map(|index| index as usize))
+        .unwrap_or(0);
+    let start = all
+        .iter()
+        .skip(chosen)
+        .find_map(|uri| listed.iter().position(|song| song == uri))
+        .unwrap_or(0);
+    (listed, start)
+}
+
+/// Downloaded songs playing with no Spotify session. Spotify Connect keeps
+/// the play order for the engine; with no engine, this keeps it.
+struct OfflinePlayback {
+    player: KeptPlayer,
+    context: Option<String>,
+    /// The downloaded songs in the list's order.
+    listed: Vec<String>,
+    /// The same songs in play order, shuffled or not.
+    order: Vec<String>,
+    index: usize,
+    shuffle: bool,
+    repeat: RepeatMode,
+}
+
+impl OfflinePlayback {
+    fn play(&mut self, index: usize, position_ms: u32, play: bool) -> anyhow::Result<()> {
+        self.index = index;
+        self.player.load(&self.order[index], position_ms, play)
+    }
+
+    /// The next song, or the first again when the list repeats; at the end
+    /// otherwise, the player stops.
+    fn next(&mut self) -> anyhow::Result<()> {
+        if self.index + 1 < self.order.len() {
+            self.play(self.index + 1, 0, true)
+        } else if self.repeat == RepeatMode::Context {
+            self.play(0, 0, true)
+        } else {
+            self.player.stop();
+            Ok(())
+        }
+    }
+
+    /// Back to the start of the song once it has played a few seconds, as
+    /// Spotify does; otherwise the song before.
+    fn previous(&mut self) -> anyhow::Result<()> {
+        if self.player.position_ms() > 3_000
+            || (self.index == 0 && self.repeat != RepeatMode::Context)
+        {
+            self.player.seek(0);
+            Ok(())
+        } else {
+            let index = self.index.checked_sub(1).unwrap_or(self.order.len() - 1);
+            self.play(index, 0, true)
+        }
+    }
+
+    /// Shuffles the songs after the current one, or puts the list's order
+    /// back, without changing what plays now.
+    fn set_shuffle(&mut self, on: bool) {
+        use rand::seq::SliceRandom as _;
+        self.shuffle = on;
+        let current = self.order[self.index].clone();
+        if on {
+            let mut rest = self.listed.clone();
+            if let Some(at) = rest.iter().position(|song| *song == current) {
+                rest.remove(at);
+            }
+            rest.shuffle(&mut rand::rng());
+            self.order = std::iter::once(current).chain(rest).collect();
+            self.index = 0;
+        } else {
+            self.order = self.listed.clone();
+            self.index = self
+                .order
+                .iter()
+                .position(|song| *song == current)
+                .unwrap_or(0);
+        }
+    }
+
+    /// The song, place and modes for Spotify Connect to carry on with.
+    fn handover(&self) -> Option<LoadSpec> {
+        let now = self.player.now()?;
+        Some(LoadSpec {
+            context_uri: self.context.clone(),
+            uris: if self.context.is_some() {
+                Vec::new()
+            } else {
+                self.listed.clone()
+            },
+            offset_uri: Some(now.uri),
+            position_ms: now.position_ms,
+            play: now.playing,
+            shuffle: Some(self.shuffle),
+            repeat: Some(self.repeat),
+            ..LoadSpec::default()
+        })
+    }
+}
+
 /// One playlist or album downloading, song by song.
 struct DownloadJob {
     session: librespot_core::Session,
     credentials: crate::credentials::Store,
     dirs: AppDirs,
     downloads: Option<Arc<crate::offline::Downloads>>,
+    name: Option<crate::offline::Name>,
     session_generation: u64,
     commands: mpsc::UnboundedSender<Command>,
 }
@@ -9253,9 +9783,12 @@ impl DownloadJob {
             return Ok(());
         }
         let listing = context.to_owned();
-        let missing =
-            crate::offline::change(&downloads, move |store| store.set_context(&listing, uris))
-                .await?;
+        let name = self.name.clone();
+        let missing = crate::offline::change(&downloads, move |store| {
+            store.set_name(&listing, name);
+            store.set_context(&listing, uris)
+        })
+        .await?;
         let _ = self.commands.send(Command::DownloadsChanged);
         let total = missing.len();
         for (done, uri) in missing.into_iter().enumerate() {

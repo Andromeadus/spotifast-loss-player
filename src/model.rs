@@ -127,6 +127,11 @@ pub enum Page {
     Radio(String),
     Queue,
     Settings,
+    /// The playlists and albums kept on this computer.
+    Downloads,
+    /// One of them, by its URI, built from the download store alone so it
+    /// opens with no network.
+    Download(String),
 }
 
 impl Page {
@@ -148,6 +153,8 @@ impl Page {
             Page::Radio(seed) => format!("radio:{seed}"),
             Page::Queue => "queue".into(),
             Page::Settings => "settings".into(),
+            Page::Downloads => "downloads".into(),
+            Page::Download(uri) => format!("download:{uri}"),
         }
     }
 
@@ -164,7 +171,11 @@ impl Page {
             "episodes" => Page::Episodes,
             "queue" => Page::Queue,
             "settings" => Page::Settings,
+            "downloads" => Page::Downloads,
             other => {
+                if let Some(uri) = other.strip_prefix("download:") {
+                    return Some(Page::Download(uri.into()));
+                }
                 let (kind, id) = other.split_once(':')?;
                 match kind {
                     "playlist" => Page::Playlist(id.into()),

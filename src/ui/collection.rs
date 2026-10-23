@@ -753,7 +753,8 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         );
         return;
     }
-    if !app.network_reachable {
+    // A Downloads page plays offline; every other table waits.
+    if !app.network_reachable && !matches!(table.page, Page::Download(_)) {
         ui.add_enabled_ui(false, |ui| {
             ui.multiply_opacity(0.55);
             table_contents(app, ui, table);
@@ -2620,6 +2621,182 @@ fn rect_after(ui: &egui::Ui, height: f32) -> Rect {
 #[allow(dead_code)]
 fn palette_of(app: &App) -> Palette {
     app.palette
+}
+
+/// The playlists and albums kept on this computer, each opening to its
+/// songs. Drawn from the download store alone, so it works offline.
+pub fn downloads(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let lists = Arc::clone(&app.downloads.lists);
+    ui.add_space(12.0);
+    theme::text(
+        ui,
+        gettext(locale, "Downloads"),
+        theme::bold(28.0),
+        palette.text,
+    );
+    ui.add_space(16.0);
+    if lists.is_empty() {
+        widgets::empty_state(
+            ui,
+            &palette,
+            Icon::CircleArrowDown,
+            &gettext(locale, "Nothing downloaded yet"),
+            &gettext(
+                locale,
+                "Use the download button on a playlist or album to keep it on this computer.",
+            ),
+        );
+        return;
+    }
+    for list in lists.iter() {
+        let name = download_name(locale, list);
+        let row = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            theme::icon(ui, Icon::CircleArrowDownFilled, 18.0, palette.accent);
+            theme::text(ui, name.clone(), theme::medium(15.0), palette.text);
+            theme::text(
+                ui,
+                song_count(locale, list.songs.len() as u32),
+                theme::regular(13.0),
+                palette.secondary,
+            );
+        });
+        let response = ui.interact(
+            row.response.rect,
+            row.response.id.with("open"),
+            Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name)
+        });
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            app.actions
+                .push(Action::Open(Page::Download(list.uri.clone())));
+        }
+        ui.add_space(8.0);
+    }
+}
+
+/// A kept list's name, or its kind when it was kept without one.
+fn download_name(locale: Locale, list: &crate::offline::KeptList) -> String {
+    if !list.name.name.is_empty() {
+        list.name.name.clone()
+    } else if list.uri.starts_with("spotify:album:") {
+        gettext(locale, "Album").into_owned()
+    } else {
+        gettext(locale, "Playlist").into_owned()
+    }
+}
+
+/// One kept playlist or album, as its page looks but built from the
+/// download store, so its songs play with no network.
+pub fn download(app: &mut App, ui: &mut egui::Ui, uri: &str) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let Some(list) = app
+        .downloads
+        .lists
+        .iter()
+        .find(|list| list.uri == uri)
+        .cloned()
+    else {
+        widgets::empty_state(
+            ui,
+            &palette,
+            Icon::CircleArrowDown,
+            &gettext(locale, "Nothing downloaded yet"),
+            &gettext(
+                locale,
+                "Use the download button on a playlist or album to keep it on this computer.",
+            ),
+        );
+        return;
+    };
+    let name = download_name(locale, &list);
+    let album = uri.starts_with("spotify:album:");
+    let items: Vec<TableItem> = list
+        .songs
+        .iter()
+        .map(|song| (PlayableItem::Track(song.clone()), None, None))
+        .collect();
+    let uris: Arc<[String]> = list.songs.iter().map(|song| song.uri.clone()).collect();
+    // Changes whenever the songs do, so the table's sorted rows follow.
+    let revision = {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        uris.hash(&mut hasher);
+        hasher.finish()
+    };
+    hero(
+        app,
+        ui,
+        Hero {
+            images: HeroImages {
+                image: list.name.cover.as_deref(),
+                ..HeroImages::default()
+            },
+            liked: false,
+            kind: if album {
+                gettext(locale, "Album")
+            } else {
+                gettext(locale, "Playlist")
+            },
+            title: &name,
+            description: None,
+            byline: vec![(song_count(locale, items.len() as u32), None)],
+            avatar: None,
+            round: false,
+        },
+    );
+    actions_row(
+        app,
+        ui,
+        Actions {
+            play_uri: Some(uri.to_string()),
+            view: Some(Arc::clone(&uris)),
+            saved: None,
+            saved_icons: (Icon::Heart, Icon::HeartFilled),
+            saved_tooltips: Default::default(),
+            owned_playlist: None,
+            reload: None,
+            name: &name,
+            save_radio: None,
+            // Only the songs kept here play, not the whole list.
+            plays_shown_rows: true,
+        },
+        None,
+    );
+    table(
+        app,
+        ui,
+        Table {
+            items: &items,
+            row_offset: 0,
+            pagination: None,
+            context: RowContext::View {
+                uris,
+                context_uri: uri.to_string(),
+                editable_playlist: None,
+            },
+            show_album: !album,
+            show_cover: !album,
+            show_added: false,
+            show_added_by: false,
+            show_plays: false,
+            page: Page::Download(uri.to_string()),
+            loading: false,
+            error: None,
+            can_load_more: false,
+            filter: "",
+            items_revision: revision,
+            plays_shown_rows: true,
+        },
+    );
 }
 
 #[cfg(test)]

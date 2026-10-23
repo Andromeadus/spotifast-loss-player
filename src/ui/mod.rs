@@ -323,6 +323,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                         })
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
+                            let offline_uri = offline_download(app, &page);
                             match page {
                                 Page::Home => home::show(app, ui),
                                 Page::TopSongs => collection::top_songs(app, ui),
@@ -332,6 +333,13 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                                 Page::Albums | Page::Artists | Page::Podcasts | Page::Episodes => {
                                     library::show(app, ui, page)
                                 }
+                                // Offline, a downloaded playlist or album opens
+                                // as its downloaded songs, which play.
+                                Page::Playlist(_) | Page::Album(_)
+                                    if let Some(uri) = &offline_uri =>
+                                {
+                                    collection::download(app, ui, uri);
+                                }
                                 Page::Playlist(id) => collection::playlist(app, ui, &id),
                                 Page::Album(id) => collection::album(app, ui, &id),
                                 Page::Artist(id) => artist::show(app, ui, &id),
@@ -339,6 +347,8 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                                 Page::Radio(seed) => radio::radio(app, ui, &seed),
                                 Page::Queue => queue::page(app, ui),
                                 Page::Settings => settings::show(app, ui),
+                                Page::Downloads => collection::downloads(app, ui),
+                                Page::Download(uri) => collection::download(app, ui, &uri),
                             }
                         });
                 },
@@ -761,6 +771,19 @@ mod window_chrome_tests {
         assert_eq!(inline.topbar_width, BUTTONS.right);
         assert_eq!(inline.topbar_top, 0.0);
     }
+}
+
+/// The URI of a downloaded playlist or album `page` shows, while offline.
+pub(crate) fn offline_download(app: &App, page: &Page) -> Option<String> {
+    if app.network_reachable {
+        return None;
+    }
+    let uri = match page {
+        Page::Playlist(id) => format!("spotify:playlist:{id}"),
+        Page::Album(id) => format!("spotify:album:{id}"),
+        _ => return None,
+    };
+    app.downloads.contexts.contains(&uri).then_some(uri)
 }
 
 #[cfg(test)]

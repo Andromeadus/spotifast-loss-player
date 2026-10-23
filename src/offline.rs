@@ -56,6 +56,40 @@ pub struct Artist {
 }
 
 impl Track {
+    /// The song as the app's tables show one, under `uri`.
+    fn api_track(&self, uri: &str) -> crate::api::models::Track {
+        use crate::api::models::{Album, ArtistRef, Image};
+        crate::api::models::Track {
+            id: crate::util::uri_id(uri).map(str::to_string),
+            name: self.name.clone(),
+            uri: uri.to_owned(),
+            duration_ms: self.duration_ms,
+            explicit: self.explicit,
+            artists: self
+                .artists
+                .iter()
+                .map(|artist| ArtistRef {
+                    id: crate::util::uri_id(&artist.uri).map(str::to_string),
+                    name: artist.name.clone(),
+                    uri: Some(artist.uri.clone()),
+                })
+                .collect(),
+            album: Some(Album {
+                name: self.album.clone(),
+                images: self
+                    .cover
+                    .iter()
+                    .map(|url| Image {
+                        url: url.clone(),
+                        ..Image::default()
+                    })
+                    .collect(),
+                ..Album::default()
+            }),
+            ..Default::default()
+        }
+    }
+
     fn format(&self) -> AudioFileFormat {
         FORMATS
             .iter()
@@ -117,6 +151,25 @@ struct Index {
     /// when it was last read. Older indexes have none.
     #[serde(default)]
     contexts: BTreeMap<String, Vec<String>>,
+    /// Each kept playlist's or album's name and cover, as its page showed
+    /// them when the download was turned on.
+    #[serde(default)]
+    names: BTreeMap<String, Name>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Name {
+    pub name: String,
+    pub cover: Option<String>,
+}
+
+/// A kept playlist or album as the Downloads page lists it: its songs that
+/// are on this computer, in the list's order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeptList {
+    pub uri: String,
+    pub name: Name,
+    pub songs: Vec<crate::api::models::Track>,
 }
 
 pub struct Store {
@@ -192,6 +245,47 @@ impl Store {
         Summary {
             contexts: self.index.contexts.keys().cloned().collect(),
             tracks: self.index.tracks.keys().cloned().collect(),
+            // ponytail: rebuilt in full after every song a download adds;
+            // send only the list that changed if long playlists lag.
+            lists: Arc::new(
+                self.index
+                    .contexts
+                    .iter()
+                    .map(|(uri, listed)| KeptList {
+                        uri: uri.clone(),
+                        name: self.index.names.get(uri).cloned().unwrap_or_default(),
+                        songs: listed
+                            .iter()
+                            .filter_map(|song| Some(self.index.tracks.get(song)?.api_track(song)))
+                            .collect(),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Every song a kept playlist or album lists, kept or not.
+    pub fn listed(&self, context: &str) -> Option<Vec<String>> {
+        self.index.contexts.get(context).cloned()
+    }
+
+    /// The kept songs of a kept playlist or album, in its order.
+    pub fn playable(&self, context: &str) -> Option<Vec<String>> {
+        let listed = self.index.contexts.get(context)?;
+        Some(
+            listed
+                .iter()
+                .filter(|song| self.index.tracks.contains_key(*song))
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Names a kept playlist or album; a name it already has stays when
+    /// none is given, as when a download is read again.
+    pub fn set_name(&mut self, context: &str, name: Option<Name>) {
+        if let Some(name) = name {
+            self.index.names.insert(context.to_owned(), name);
         }
     }
 
@@ -213,6 +307,7 @@ impl Store {
     }
 
     pub fn remove_context(&mut self, context: &str) -> anyhow::Result<()> {
+        self.index.names.remove(context);
         if self.index.contexts.remove(context).is_some() {
             self.prune()?;
         }
@@ -264,6 +359,7 @@ impl Store {
 pub struct Summary {
     pub contexts: BTreeSet<String>,
     pub tracks: BTreeSet<String>,
+    pub lists: Arc<Vec<KeptList>>,
 }
 
 /// The store as the player reads it, shared with the downloads that fill it.

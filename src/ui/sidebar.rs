@@ -983,6 +983,18 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     {
         app.actions.push(Action::FocusSearch);
     }
+    if !app.downloads.contexts.is_empty()
+        && nav_row(
+            ui,
+            &palette,
+            Icon::CircleArrowDown,
+            &gettext(locale, "Downloads"),
+            matches!(page, Page::Downloads | Page::Download(_)),
+        )
+        .clicked()
+    {
+        app.actions.push(Action::Open(Page::Downloads));
+    }
     ui.add_space(10.0);
     ui.painter().hline(
         ui.max_rect().x_range().shrink(4.0),

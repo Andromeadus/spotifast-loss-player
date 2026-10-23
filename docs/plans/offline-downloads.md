@@ -115,9 +115,9 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
   online or not. The backend opens the store when it restores sign-ins
   and hands it to every engine. A song is kept under the URI asked for and
   the one Spotify relinks it to, since the app plays the relinked one.
-- Known gap: the store opens once at startup. If the keychain does not
-  answer within 20 s (a locked keychain, or macOS asking about a rebuilt
-  binary), downloads stay closed until the next start. Retry in step 5.
+- The store is asked for again, from 5 s up to once a minute, until the
+  keychain answers (a locked keychain, or macOS asking about a rebuilt
+  binary), and no longer after sign-out.
 - librespot comes from github.com/Andromeadus/librespot, branch `offline`,
   pinned by commit in `Cargo.toml`. The local clone at `../librespot` has
   that branch with a `fork` remote: commit there, push, then bump the rev.
@@ -128,7 +128,24 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
 - Step 4 done (playlists and albums): the Download button, a ring that
   fills while songs arrive, a spinner on the song fetching, green arrows on
   kept songs, and a re-read of every download whenever playback connects.
-  Liked Songs and a Downloads view in the library are not done.
+  Liked Songs downloads are not done.
+- Steps 3b and 3c done (tested 2026-10-23, macOS): with no engine, the
+  backend plays downloads on a player over an unconnected session, keeps
+  the play order, and moves on at each song's end. Offline, a play goes
+  to it at once; Pause, Next, Previous, seek, volume, Shuffle and Repeat
+  work; the queue does not. When macOS reports the network gone, the
+  Connect engine is ended at once, as a dropped session is, and a
+  downloaded song playing carries on offline in the list it was started
+  from. A Downloads page lists the kept playlists and albums, and offline
+  a kept playlist's or album's own page opens as its downloaded songs.
+  Elsewhere offline, only downloaded rows play.
+- Step 3d done: when the engine connects again, the offline song moves to
+  Spotify Connect where it had got to.
+- Known gap: after Wi-Fi came back, Connect took about 75 s to take over
+  (2026-10-23); the song played on offline meanwhile.
+- Not done: normal playlist and album pages offline for content not
+  downloaded (cached rows), and offline playback on Linux and Windows,
+  which do not report reachability.
 - Known gap: an offline cold start took about 13 s to leave the
   Connecting card (2026-10-22, macOS). Not measured yet; likely the first
   `/me` attempt (token refresh) or the keychain reads.

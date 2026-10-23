@@ -1667,7 +1667,10 @@ impl App {
 
     /// Where playback commands go: this computer's player or a remote device.
     pub fn target(&self) -> Target {
-        if self.local_ready && self.local.is_active() {
+        // Offline, the backend plays downloads on a player of its own.
+        // ponytail: only macOS reports reachability; elsewhere this waits
+        // for the engine like any other disconnect.
+        if (self.local_ready || !self.network_reachable) && self.local.is_active() {
             return Target::Local;
         }
         if let Some(selected) = &self.selected_device
@@ -2280,6 +2283,31 @@ impl App {
                     .get()
                     .and_then(|playlists| playlists.iter().find(|playlist| playlist.id == id))
             })
+    }
+
+    /// A playlist's or album's name and cover, kept with its download for
+    /// the Downloads page.
+    fn download_name(&self, uri: &str) -> Option<crate::offline::Name> {
+        let (name, images) = if let Some(id) = uri.strip_prefix("spotify:playlist:") {
+            let playlist = self
+                .playlist_pages
+                .get(id)
+                .and_then(|page| page.playlist.get())
+                .or_else(|| self.known_playlist(id))?;
+            (&playlist.name, &playlist.images)
+        } else {
+            let id = uri.strip_prefix("spotify:album:")?;
+            let album = self
+                .album_pages
+                .get(id)
+                .and_then(|page| page.album.get())
+                .or_else(|| self.known_album(id))?;
+            (&album.name, &album.images)
+        };
+        Some(crate::offline::Name {
+            name: name.clone(),
+            cover: pick_image(images, 300).map(str::to_string),
+        })
     }
 
     pub fn known_album(&self, id: &str) -> Option<&Album> {
@@ -2991,7 +3019,7 @@ impl App {
                     self.refresh_queue(true);
                 }
             }
-            Page::Settings => {}
+            Page::Settings | Page::Downloads | Page::Download(_) => {}
         }
     }
 
@@ -5179,6 +5207,8 @@ impl App {
                 }
             }
             Page::Settings => self.refresh_autostart(),
+            // Built from the download store, which is always loaded.
+            Page::Downloads | Page::Download(_) => {}
         }
     }
 
@@ -8896,9 +8926,15 @@ impl App {
             shuffle: shuffle.then_some(true),
             at: Instant::now(),
         });
-        self.queue_start_pending = Some(self.target());
-        match self.target() {
-            Target::Local if !self.local.connected => {
+        // Offline, downloaded songs play here without waiting for Spotify.
+        let target = if self.network_reachable {
+            self.target()
+        } else {
+            Target::Local
+        };
+        self.queue_start_pending = Some(target.clone());
+        match target {
+            Target::Local if !self.local.connected && self.network_reachable => {
                 // Hold the request while the local engine reconnects.
                 self.queued_play = Some(request);
             }
@@ -10118,6 +10154,14 @@ impl App {
     /// Whether `item` can start playback here: a local file only when the
     /// local files folder holds it.
     pub fn row_playable(&self, item: &PlayableItem) -> bool {
+        // Offline, only what is on this computer plays.
+        if !self.network_reachable {
+            return self.downloads.tracks.contains(item.uri())
+                || self
+                    .local_files
+                    .as_ref()
+                    .is_some_and(|(_, uris)| uris.contains_key(&local_file_key(item.uri())));
+        }
         crate::ui::widgets::row_playable(item)
             || self
                 .local_files
@@ -10894,7 +10938,8 @@ impl App {
                 } else {
                     self.downloads.contexts.remove(&uri);
                 }
-                self.backend.set_download(uri, on);
+                let name = on.then(|| self.download_name(&uri)).flatten();
+                self.backend.set_download(uri, on, name);
             }
             Action::ToggleSaved(uri) => {
                 let saved = self.is_saved(&uri).unwrap_or(false);
@@ -24366,6 +24411,68 @@ mod tests {
         assert!(
             !app.track_cache.contains_key("one"),
             "the song left behind can go"
+        );
+    }
+
+    #[test]
+    fn offline_a_downloaded_song_plays_here_and_the_rest_cannot() {
+        let mut app = headless_app();
+        let ctx = egui::Context::default();
+        app.network_reachable = false;
+        app.downloads.tracks.insert("spotify:track:kept".into());
+        let song = |uri: &str| {
+            PlayableItem::Track(Track {
+                uri: uri.into(),
+                ..Default::default()
+            })
+        };
+        assert!(app.row_playable(&song("spotify:track:kept")));
+        assert!(!app.row_playable(&song("spotify:track:streamed")));
+
+        app.apply(
+            Action::PlayFromRow {
+                context: RowContext::View {
+                    uris: vec!["spotify:track:kept".to_string()].into(),
+                    context_uri: "spotify:album:x".into(),
+                    editable_playlist: None,
+                },
+                uri: "spotify:track:kept".into(),
+                index: 0,
+            },
+            &ctx,
+        );
+        // Sent to this computer's player at once, not held for the network.
+        let commands = app.backend.take_player_commands();
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                PlayerCommand::Load(load) if load.uris.contains(&"spotify:track:kept".to_string())
+                    || load.context_uri.as_deref() == Some("spotify:track:kept")
+            )),
+            "{commands:?}, waiting: {}",
+            app.queued_play.is_some()
+        );
+        assert!(app.queued_play.is_none());
+    }
+
+    #[test]
+    fn offline_a_downloaded_playlist_opens_as_its_downloaded_songs() {
+        let mut app = headless_app();
+        let playlist = Page::Playlist("37i9dQZF1DXcBWIGoYBM5M".into());
+        app.downloads
+            .contexts
+            .insert("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".into());
+        // Online, the playlist's own page.
+        assert_eq!(crate::ui::offline_download(&app, &playlist), None);
+        app.network_reachable = false;
+        assert_eq!(
+            crate::ui::offline_download(&app, &playlist).as_deref(),
+            Some("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M")
+        );
+        // Not downloaded: the usual offline page.
+        assert_eq!(
+            crate::ui::offline_download(&app, &Page::Album("other".into())),
+            None
         );
     }
 
