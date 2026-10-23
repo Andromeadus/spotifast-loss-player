@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: Spotifast\n"
 "Report-Msgid-Bugs-To: https://github.com/crmne/spotifast/issues/new?"
 "template=translation.yml\n"
-"POT-Creation-Date: 2026-10-23 14:03-0500\n"
+"POT-Creation-Date: 2026-10-23 16:40-0500\n"
 "PO-Revision-Date: 2026-10-02 20:30+0300\n"
 "Last-Translator: Barış Berke Çetin <brsberkectn@gmail.com>\n"
 "Language-Team: Turkish\n"
@@ -28,13 +28,13 @@ msgstr "{name} duraklat"
 msgid "Play {name}"
 msgstr "{name} çal"
 
-#: src/ui/sidebar.rs:302 src/app.rs:3364 src/app.rs:21954
+#: src/ui/sidebar.rs:302 src/app.rs:3364 src/app.rs:21956
 #: src/ui/collection.rs:2176 src/ui/collection.rs:2393
-#: src/ui/collection.rs:2692 src/ui/collection.rs:2747
+#: src/ui/collection.rs:2720 src/ui/collection.rs:2778
 msgid "Playlist"
 msgstr "Çalma listesi"
 
-#: src/ui/sidebar.rs:312 src/ui/friends.rs:286 src/app.rs:3338 src/app.rs:21959
+#: src/ui/sidebar.rs:312 src/ui/friends.rs:286 src/app.rs:3338 src/app.rs:21961
 #: src/ui/collection.rs:2386 src/ui/home.rs:93 src/ui/keys.rs:264
 #: src/ui/winamp/playlist.rs:653
 msgid "Liked Songs"
@@ -440,7 +440,7 @@ msgid "No timed lyrics for this track."
 msgstr "Bu parça için senkronize şarkı sözü yok."
 
 #: src/ui/lyrics.rs:462 src/ui/widgets.rs:2842 src/ui/widgets.rs:2882
-#: src/ui/widgets.rs:2910 src/app.rs:13006 src/ui/collection.rs:949
+#: src/ui/widgets.rs:2910 src/app.rs:13008 src/ui/collection.rs:949
 msgid "Loading…"
 msgstr "Yükleniyor…"
 
@@ -650,7 +650,7 @@ msgstr "DİNLENME"
 msgid "Sort by duration"
 msgstr "Süreye göre sırala"
 
-#: src/ui/widgets.rs:2921 src/app.rs:13215 src/app.rs:13229
+#: src/ui/widgets.rs:2921 src/app.rs:13217 src/app.rs:13231
 msgid "Network connection error. Check your connection."
 msgstr "Ağ bağlantısı hatası. Bağlantınızı kontrol edin."
 
@@ -770,8 +770,8 @@ msgstr "Spotify ses bağlantısı kesildi. Yerel çalma yeniden bağlanıyor"
 msgid "Radio"
 msgstr "Radyo"
 
-#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2690
-#: src/ui/collection.rs:2745 src/ui/prerelease.rs:71
+#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2718
+#: src/ui/collection.rs:2776 src/ui/prerelease.rs:71
 msgid "Album"
 msgstr "Albüm"
 
@@ -828,7 +828,7 @@ msgid "Queue cleared"
 msgstr "Sıra temizlendi"
 
 #. Translators: Keep {date} unchanged. It is a date in YYYY-MM-DD form.
-#: src/app.rs:6099 src/app.rs:21944
+#: src/app.rs:6099 src/app.rs:21946
 #, rust-format
 msgid "Queue {date}"
 msgstr "Sıra {date}"
@@ -1038,37 +1038,37 @@ msgstr[1] "{count} şarkı sıraya eklendi"
 msgid "{name} added to queue"
 msgstr "{name} sıraya eklendi"
 
-#: src/app.rs:10406
+#: src/app.rs:10408
 msgid "The clipboard has no Spotify song links"
 msgstr "Panoda Spotify şarkı bağlantısı yok"
 
 #. Translators: {count} is the number of pasted links that failed.
-#: src/app.rs:10487
+#: src/app.rs:10489
 #, rust-format
 msgid "{count} pasted link could not be added"
 msgid_plural "{count} pasted links could not be added"
 msgstr[0] "Yapıştırılan {count} bağlantı eklenemedi"
 msgstr[1] "Yapıştırılan {count} bağlantı eklenemedi"
 
-#: src/app.rs:11174
+#: src/app.rs:11176
 msgid "Spotify doesn't let apps remove a playlist description, so it was kept"
 msgstr ""
 "Spotify uygulamaların çalma listesi açıklamasını silmesine izin vermiyor, bu "
 "nedenle korundu"
 
-#: src/app.rs:11236 src/app.rs:11249
+#: src/app.rs:11238 src/app.rs:11251
 msgid "Link copied"
 msgstr "Bağlantı kopyalandı"
 
 #. Translators: {count} is a number of song links, always more than one.
-#: src/app.rs:11253
+#: src/app.rs:11255
 #, rust-format
 msgid "{count} link copied"
 msgid_plural "{count} links copied"
 msgstr[0] "{count} bağlantı kopyalandı"
 msgstr[1] "{count} bağlantı kopyalandı"
 
-#: src/app.rs:11541
+#: src/app.rs:11543
 msgid ""
 "Spotify doesn't let apps reorder your playlists, so this order is saved on "
 "this computer"
@@ -1076,77 +1076,77 @@ msgstr ""
 "Spotify uygulamaların çalma listelerinizi yeniden sıralamasına izin "
 "vermiyor, bu nedenle bu sıra bu bilgisayara kaydedildi"
 
-#: src/app.rs:11637
+#: src/app.rs:11639
 msgid "Restarting local playback"
 msgstr "Yerel çalma yeniden başlatılıyor"
 
-#: src/app.rs:11673
+#: src/app.rs:11675
 msgid "Local playback needs Spotify Premium"
 msgstr "Yerel çalma için Spotify Premium gerekir"
 
-#: src/app.rs:11723
+#: src/app.rs:11725
 msgid "Play history cleared"
 msgstr "Çalma geçmişi temizlendi"
 
 #. Translators: {size} is a size in megabytes, such as 12.5.
-#: src/app.rs:11734
+#: src/app.rs:11736
 #, rust-format
 msgid "Cleared {size} MB of artwork"
 msgstr "{size} MB albüm kapağı temizlendi"
 
 #. Translators: {error} is an error message.
-#: src/app.rs:11740
+#: src/app.rs:11742
 #, rust-format
 msgid "Couldn't clear artwork: {error}"
 msgstr "Albüm kapakları temizlenemedi: {error}"
 
-#: src/app.rs:11967
+#: src/app.rs:11969
 msgid "Downloading MilkDrop preset packs"
 msgstr "MilkDrop hazır ayar paketleri indiriliyor"
 
 #. Translators: {name} is the name of a visualizer preset pack.
-#: src/app.rs:12001
+#: src/app.rs:12003
 #, rust-format
 msgid "Downloading {name} presets"
 msgstr "{name} hazır ayarları indiriliyor"
 
-#: src/app.rs:13149
+#: src/app.rs:13151
 msgid "Couldn't start playback"
 msgstr "Çalma başlatılamadı"
 
-#: src/app.rs:13150
+#: src/app.rs:13152
 msgid "Couldn't pause"
 msgstr "Duraklatılamadı"
 
-#: src/app.rs:13151
+#: src/app.rs:13153
 msgid "Couldn't skip"
 msgstr "Atlanamadı"
 
-#: src/app.rs:13152
+#: src/app.rs:13154
 msgid "Couldn't go back"
 msgstr "Geri gidilemedi"
 
-#: src/app.rs:13153
+#: src/app.rs:13155
 msgid "Couldn't seek"
 msgstr "Konum değiştirilemedi"
 
-#: src/app.rs:13154
+#: src/app.rs:13156
 msgid "Couldn't change the volume"
 msgstr "Ses düzeyi değiştirilemedi"
 
-#: src/app.rs:13155
+#: src/app.rs:13157
 msgid "Couldn't change shuffle"
 msgstr "Karışık çalma modu değiştirilemedi"
 
-#: src/app.rs:13156
+#: src/app.rs:13158
 msgid "Couldn't change repeat"
 msgstr "Tekrarlama modu değiştirilemedi"
 
-#: src/app.rs:13199 src/ui/mod.rs:408
+#: src/app.rs:13201 src/ui/mod.rs:408
 msgid "Spotify won't let this computer play this song right now."
 msgstr "Spotify şu anda bu bilgisayarın bu şarkıyı çalmasına izin vermiyor."
 
-#: src/app.rs:13206
+#: src/app.rs:13208
 msgid ""
 "No audio output device was found. Connect or enable one, then press play "
 "again."
@@ -1154,20 +1154,20 @@ msgstr ""
 "Hiçbir ses çıkış cihazı bulunamadı. Bir cihaz bağlayın veya etkinleştirin, "
 "ardından tekrar çala basın."
 
-#: src/app.rs:13220
+#: src/app.rs:13222
 msgid ""
 "Spotify doesn't make this playlist's songs available to third-party apps."
 msgstr ""
 "Spotify bu çalma listesindeki şarkıları üçüncü taraf uygulamaların erişimine "
 "açmıyor."
 
-#: src/app.rs:13341
+#: src/app.rs:13343
 msgid "Spotify sign-in expired. Sign in again, then retry the cover upload."
 msgstr ""
 "Spotify oturumunuzun süresi doldu. Tekrar giriş yapın ve kapak yüklemeyi "
 "yeniden deneyin."
 
-#: src/app.rs:13346
+#: src/app.rs:13348
 msgid ""
 "Spotify refused this cover. Check that you own the playlist, then sign in "
 "again to grant image upload permission. If using a personal app, reconnect "
@@ -1177,19 +1177,19 @@ msgstr ""
 "ve görsel yükleme izni vermek için yeniden giriş yapın. Kişisel bir uygulama "
 "kullanıyorsanız Ayarlar'dan da yeniden bağlayın."
 
-#: src/app.rs:13350
+#: src/app.rs:13352
 msgid "Spotify rejected the image size. Choose a smaller image."
 msgstr "Spotify görsel boyutunu reddetti. Daha küçük bir görsel seçin."
 
 #. Translators: {error} is an error message.
-#: src/app.rs:13353
+#: src/app.rs:13355
 #, rust-format
 msgid "Couldn't upload the cover: {error}. Try again."
 msgstr "Kapak yüklenemedi: {error}. Yeniden deneyin."
 
 #. Translators: Keep {track} unchanged. It is the name of the song,
 #. playlist, album, or artist the radio is based on, not translated.
-#: src/app.rs:21964 src/app/radio.rs:38
+#: src/app.rs:21966 src/app/radio.rs:38
 #, rust-format
 msgid "{track} Radio"
 msgstr "{track} Radyosu"
@@ -2407,16 +2407,32 @@ msgid_plural "and {count} others"
 msgstr[0] "ve {count} kişi daha"
 msgstr[1] "ve {count} kişi daha"
 
-#: src/ui/collection.rs:2645 src/ui/collection.rs:2712
+#: src/ui/collection.rs:2645 src/ui/collection.rs:2740
 msgid "Nothing downloaded yet"
 msgstr "Henüz indirilen bir şey yok"
 
-#: src/ui/collection.rs:2648 src/ui/collection.rs:2715
+#: src/ui/collection.rs:2648 src/ui/collection.rs:2743
 msgid ""
 "Use the download button on a playlist or album to keep it on this computer."
 msgstr ""
 "Bir çalma listesini veya albümü bu bilgisayarda tutmak için indirme "
 "düğmesini kullanın."
+
+#: src/ui/collection.rs:2698
+msgid "Go online to keep playing downloads"
+msgstr "İndirilenleri çalmaya devam etmek için çevrimiçi olun"
+
+#: src/ui/collection.rs:2701
+msgid "Downloads play offline for 30 days after Spotifast was last online."
+msgstr "İndirilenler, Spotifast'in en son çevrimiçi olmasından sonra 30 gün çevrimdışı çalar."
+
+#: src/ui/collection.rs:2705
+msgid "Downloads need Spotify Premium"
+msgstr "İndirmeler için Spotify Premium gerekir"
+
+#: src/ui/collection.rs:2706
+msgid "They play again once this account has Premium."
+msgstr "Bu hesapta Premium olduğunda yeniden çalarlar."
 
 #. Translators: {name} is the name this computer uses in Spotify Connect.
 #: src/ui/devices.rs:134 src/ui/devices.rs:528

@@ -189,7 +189,10 @@ librespot provides:
   songs play on a player of their own: a kept playlist or album opens as
   its downloaded songs, and play, pause, skip, seek, shuffle and repeat
   work, but the queue cannot be changed. When the network returns, Spotify
-  Connect carries the song on. See `docs/plans/offline-downloads.md`.
+  Connect carries the song on. As in Spotify's own client, downloads play
+  offline for 30 days after Spotifast was last online, need Premium, and
+  are deleted, with their key, on sign-out. See
+  `docs/plans/offline-downloads.md`.
 
 Spotify Premium is required. librespot cannot play audio with a free account.
 

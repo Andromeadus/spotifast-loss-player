@@ -2650,6 +2650,9 @@ pub fn downloads(app: &mut App, ui: &mut egui::Ui) {
         );
         return;
     }
+    if downloads_blocked(app, ui) {
+        return;
+    }
     for list in lists.iter() {
         let name = download_name(locale, list);
         let row = ui.horizontal(|ui| {
@@ -2680,6 +2683,31 @@ pub fn downloads(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.add_space(8.0);
     }
+}
+
+/// Explains, offline, why the downloads do not play, in place of them.
+/// True when it did.
+fn downloads_blocked(app: &App, ui: &mut egui::Ui) -> bool {
+    if app.network_reachable {
+        return false;
+    }
+    let locale = app.locale;
+    let (title, body) = match app.downloads.blocked {
+        None => return false,
+        Some(crate::backend::DownloadsBlocked::CheckInDue) => (
+            gettext(locale, "Go online to keep playing downloads"),
+            gettext(
+                locale,
+                "Downloads play offline for 30 days after Spotifast was last online.",
+            ),
+        ),
+        Some(crate::backend::DownloadsBlocked::NotPremium) => (
+            gettext(locale, "Downloads need Spotify Premium"),
+            gettext(locale, "They play again once this account has Premium."),
+        ),
+    };
+    widgets::empty_state(ui, &app.palette, Icon::CircleArrowDown, &title, &body);
+    true
 }
 
 /// A kept list's name, or its kind when it was kept without one.
@@ -2717,6 +2745,9 @@ pub fn download(app: &mut App, ui: &mut egui::Ui, uri: &str) {
         );
         return;
     };
+    if downloads_blocked(app, ui) {
+        return;
+    }
     let name = download_name(locale, &list);
     let album = uri.starts_with("spotify:album:");
     let items: Vec<TableItem> = list

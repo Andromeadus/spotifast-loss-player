@@ -22,6 +22,9 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::{Deserialize, Serialize};
 
 const INDEX_FILE: &str = "index.sealed";
+/// How long downloads play without Spotifast going online, as Spotify's own
+/// client allows.
+pub const CHECK_IN_DAYS: i64 = 30;
 /// Binds a sealed index to this use of the key.
 const AAD: &[u8] = b"spotifast-offline-index-v1";
 /// The best first: librespot is never given lossless keys (see
@@ -155,6 +158,10 @@ struct Index {
     /// them when the download was turned on.
     #[serde(default)]
     names: BTreeMap<String, Name>,
+    /// When the playback session last reached Spotify, in Unix seconds.
+    /// Older indexes have none and start counting when first opened.
+    #[serde(default)]
+    checked_in: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -197,7 +204,24 @@ impl Store {
         if index.version != 1 {
             bail!("unknown offline index version {}", index.version);
         }
+        let mut index = index;
+        index.checked_in.get_or_insert_with(now);
         Ok(Self { dir, key, index })
+    }
+
+    /// Records that Spotifast reached Spotify now, which starts the
+    /// downloads' offline time again.
+    pub fn check_in(&mut self, now: i64) -> anyhow::Result<()> {
+        self.index.checked_in = Some(now);
+        self.save()
+    }
+
+    /// Whether the downloads have gone longer than [`CHECK_IN_DAYS`]
+    /// without Spotifast going online, and so stop playing offline.
+    pub fn expired(&self, now: i64) -> bool {
+        self.index
+            .checked_in
+            .is_some_and(|at| now.saturating_sub(at) > CHECK_IN_DAYS * 24 * 60 * 60)
     }
 
     /// A fresh random key for [`Store::open`].
@@ -412,8 +436,24 @@ pub async fn open_or_create(
         .save(crate::credentials::Grant::Offline(key.clone()))
         .await?;
     let dir = dir(dirs);
+    // Files left from a key now gone, such as a download still writing when
+    // its account signed out, can never be opened again: they go.
+    let leftovers = dir.clone();
+    tokio::task::spawn_blocking(move || match std::fs::remove_dir_all(&leftovers) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    })
+    .await?
+    .context("unable to remove downloads left from an earlier key")?;
     let store = tokio::task::spawn_blocking(move || Store::open(dir, &key)).await??;
     Ok(Arc::new(Downloads(RwLock::new(store))))
+}
+
+/// Now, in Unix seconds.
+pub fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64)
 }
 
 /// Runs `change` on the store off the runtime's threads: it writes the disk.
@@ -707,6 +747,39 @@ mod tests {
         assert_eq!(store.summary(), Summary::default());
         assert!(!dir.join("f2").exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn downloads_stop_after_thirty_days_without_going_online() {
+        let dir = temp_dir("offline-check-in");
+        let key = Store::new_key().unwrap();
+        let mut store = Store::open(dir.clone(), &key).unwrap();
+        let day = 24 * 60 * 60;
+        store.check_in(1_000 * day).unwrap();
+        assert!(!store.expired(1_030 * day));
+        assert!(store.expired(1_030 * day + 1));
+        // Kept with the index, sealed.
+        let store = Store::open(dir.clone(), &key).unwrap();
+        assert!(store.expired(1_031 * day));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_new_key_clears_files_an_old_key_left() {
+        let root = temp_dir("offline-new-key");
+        let dirs = crate::paths::AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let leftover = dir(&dirs);
+        std::fs::create_dir_all(&leftover).unwrap();
+        std::fs::write(leftover.join(INDEX_FILE), b"sealed by a key now gone").unwrap();
+        let credentials = crate::credentials::Store::in_memory(dirs.clone());
+        let downloads = open_or_create(&credentials, &dirs).await.unwrap();
+        assert!(downloads.0.read().unwrap().summary().contexts.is_empty());
+        assert!(!leftover.join(INDEX_FILE).exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

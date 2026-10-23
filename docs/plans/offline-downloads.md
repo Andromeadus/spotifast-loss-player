@@ -143,6 +143,12 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
   Spotify Connect where it had got to.
 - Known gap: after Wi-Fi came back, Connect took about 75 s to take over
   (2026-10-23); the song played on offline meanwhile.
+- Step 5 done: the sealed index records when the playback session last
+  reached Spotify; offline, downloads stop playing 30 days after that and
+  the pages say to go online. Without Premium they do not play and the
+  pages say so. Signing out revokes the offline key and deletes the
+  downloads folder; a new key also clears files an old one left.
+  The check-in trusts the computer's clock.
 - Not done: normal playlist and album pages offline for content not
   downloaded (cached rows), and offline playback on Linux and Windows,
   which do not report reachability.

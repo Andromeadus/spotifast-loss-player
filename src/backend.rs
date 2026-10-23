@@ -966,6 +966,27 @@ pub struct DownloadsState {
     pub progress: Option<DownloadProgress>,
     /// Each kept playlist and album with its songs on this computer.
     pub lists: Arc<Vec<crate::offline::KeptList>>,
+    /// Why the downloads do not play offline, when they do not.
+    pub blocked: Option<DownloadsBlocked>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadsBlocked {
+    /// Spotifast has not been online for [`crate::offline::CHECK_IN_DAYS`].
+    CheckInDue,
+    /// The account no longer has Premium.
+    NotPremium,
+}
+
+impl DownloadsBlocked {
+    fn message(self) -> &'static str {
+        match self {
+            Self::CheckInDue => {
+                "Go online to keep playing downloads: they play offline for 30 days after Spotifast was last online"
+            }
+            Self::NotPremium => "Downloads need Spotify Premium",
+        }
+    }
 }
 
 /// The download running.
@@ -2844,6 +2865,7 @@ impl Worker {
                         let opened = self.offline.is_none();
                         self.offline = downloads;
                         if opened {
+                            self.check_in_downloads();
                             self.sync_downloads();
                         }
                         self.emit_downloads();
@@ -3029,6 +3051,10 @@ impl Worker {
     /// Starts the downloaded songs a load names: its own list, or a kept
     /// playlist's or album's, at the song it chose.
     fn load_offline(&mut self, spec: &LoadSpec, downloads: &Arc<crate::offline::Downloads>) {
+        if let Some(blocked) = self.downloads_blocked() {
+            self.emit(Event::Error(blocked.message().into()));
+            return;
+        }
         let (listed, start) =
             offline_queue(spec, &downloads.0.read().unwrap_or_else(|p| p.into_inner()));
         if listed.is_empty() {
@@ -3131,7 +3157,38 @@ impl Worker {
             tracks: summary.tracks,
             progress: self.download_progress.clone(),
             lists: summary.lists,
+            blocked: self.downloads_blocked(),
         }));
+    }
+
+    /// Why the downloads may not play offline now, if they may not.
+    fn downloads_blocked(&self) -> Option<DownloadsBlocked> {
+        if self.premium == Some(false) {
+            return Some(DownloadsBlocked::NotPremium);
+        }
+        let downloads = self.offline.as_ref()?;
+        let store = downloads.0.read().unwrap_or_else(|p| p.into_inner());
+        store
+            .expired(crate::offline::now())
+            .then_some(DownloadsBlocked::CheckInDue)
+    }
+
+    /// The playback session reached Spotify: the downloads' offline time
+    /// starts again.
+    fn check_in_downloads(&self) {
+        let (Some(_), Some(downloads)) = (&self.engine, self.offline.clone()) else {
+            return;
+        };
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let checked =
+                crate::offline::change(&downloads, |store| store.check_in(crate::offline::now()))
+                    .await;
+            if let Err(error) = checked {
+                log::warn!("unable to record the downloads' check-in: {error:#}");
+            }
+            let _ = commands.send(Command::DownloadsChanged);
+        });
     }
 
     fn set_download(&mut self, context: String, on: bool) {
@@ -3705,6 +3762,21 @@ impl Worker {
         if let Some(offline) = self.offline_playback.take() {
             offline.player.stop();
         }
+        // Downloads belong to the account: its key goes first, so nothing
+        // can open them again, then the files.
+        if let Err(error) = self.credentials.revoke(CredentialSlot::Offline) {
+            self.emit(Event::Error(error.to_string()));
+        }
+        self.delete_stored_grant(CredentialSlot::Offline);
+        let downloads = crate::offline::dir(&self.dirs);
+        tokio::spawn(async move {
+            match tokio::fs::remove_dir_all(&downloads).await {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    log::warn!("unable to delete the downloads: {error}");
+                }
+                _ => {}
+            }
+        });
         self.offline = None;
         self.download_queue.clear();
         if let Some((_, stop)) = self.download_running.take() {
@@ -4252,6 +4324,7 @@ impl Worker {
                 }
                 engine.set_offline(self.offline.clone());
                 self.engine = Some(engine);
+                self.check_in_downloads();
                 self.sync_downloads();
                 self.start_rootlist();
                 self.reconnects.clear();
@@ -4322,6 +4395,7 @@ impl Worker {
     /// unknown, preserve the previous behavior and start the engine.
     fn on_account_checked(&mut self, premium: Option<bool>) {
         self.premium = premium;
+        self.emit_downloads();
         if premium == Some(false) {
             self.album_type_lookup.clear_engine_work();
             self.playlist_header_lookup.clear_engine_work();
@@ -9290,6 +9364,74 @@ mod authorization_tests {
         };
         assert!(offline_takeover(&streamed, Some(&album), &store).is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn signing_out_deletes_the_downloads_and_their_key() {
+        let (runtime, mut worker, events) = worker("download-sign-out");
+        let _entered = runtime.enter();
+        verify(&mut worker, ApiSource::Shared, "alice");
+        let downloads = runtime
+            .block_on(crate::offline::open_or_create(
+                &worker.credentials,
+                &worker.dirs,
+            ))
+            .unwrap();
+        runtime
+            .block_on(crate::offline::change(&downloads, |store| {
+                store.set_context("spotify:album:x", Vec::new()).map(|_| ())
+            }))
+            .unwrap();
+        worker.offline = Some(downloads);
+
+        worker.sign_out();
+        let dir = crate::offline::dir(&worker.dirs);
+        let gone = runtime.block_on(async {
+            for _ in 0..100 {
+                if !dir.exists() {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            false
+        });
+        assert!(gone, "the downloads folder goes");
+        let key = runtime
+            .block_on(worker.credentials.lease(CredentialSlot::Offline).load())
+            .unwrap();
+        assert!(key.grant.is_none(), "the key goes");
+        assert!(last_downloads(&events).unwrap().contexts.is_empty());
+    }
+
+    #[test]
+    fn without_premium_downloads_do_not_play_offline() {
+        let (runtime, mut worker, events) = worker("download-not-premium");
+        let _entered = runtime.enter();
+        let downloads = runtime
+            .block_on(crate::offline::open_or_create(
+                &worker.credentials,
+                &worker.dirs,
+            ))
+            .unwrap();
+        worker.offline = Some(Arc::clone(&downloads));
+        worker.on_account_checked(Some(false));
+        assert_eq!(
+            last_downloads(&events).unwrap().blocked,
+            Some(DownloadsBlocked::NotPremium)
+        );
+        worker.load_offline(
+            &LoadSpec {
+                context_uri: Some("spotify:track:a".into()),
+                ..LoadSpec::default()
+            },
+            &downloads,
+        );
+        assert!(worker.offline_playback.is_none());
+        assert!(
+            events
+                .try_iter()
+                .any(|event| matches!(event, Event::Error(message) if message.contains("Premium")))
+        );
     }
 
     #[test]

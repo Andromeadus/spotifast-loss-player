@@ -10156,7 +10156,9 @@ impl App {
     pub fn row_playable(&self, item: &PlayableItem) -> bool {
         // Offline, only what is on this computer plays.
         if !self.network_reachable {
-            return self.downloads.tracks.contains(item.uri())
+            let downloaded =
+                self.downloads.blocked.is_none() && self.downloads.tracks.contains(item.uri());
+            return downloaded
                 || self
                     .local_files
                     .as_ref()
@@ -24428,6 +24430,10 @@ mod tests {
         };
         assert!(app.row_playable(&song("spotify:track:kept")));
         assert!(!app.row_playable(&song("spotify:track:streamed")));
+        // Locked downloads do not play either.
+        app.downloads.blocked = Some(crate::backend::DownloadsBlocked::CheckInDue);
+        assert!(!app.row_playable(&song("spotify:track:kept")));
+        app.downloads.blocked = None;
 
         app.apply(
             Action::PlayFromRow {
