@@ -5,7 +5,7 @@
 //! play only inside Spotifast. Everything here waits on the disk or the
 //! network: call it from the backend runtime, never the UI thread.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -113,6 +113,10 @@ struct Index {
     version: u32,
     /// By track URI.
     tracks: BTreeMap<String, Track>,
+    /// The playlists and albums kept, by URI, with the songs each listed
+    /// when it was last read. Older indexes have none.
+    #[serde(default)]
+    contexts: BTreeMap<String, Vec<String>>,
 }
 
 pub struct Store {
@@ -178,11 +182,88 @@ impl Store {
         self.save()
     }
 
+    pub fn has_context(&self, uri: &str) -> bool {
+        self.index.contexts.contains_key(uri)
+    }
+
+    /// What the app shows: the playlists and albums kept, and every song
+    /// URI that plays from disk.
+    pub fn summary(&self) -> Summary {
+        Summary {
+            contexts: self.index.contexts.keys().cloned().collect(),
+            tracks: self.index.tracks.keys().cloned().collect(),
+        }
+    }
+
+    /// Keeps `context` listing `tracks`, lets go of the songs no kept
+    /// context lists any more, and answers the listed songs still to fetch.
+    pub fn set_context(
+        &mut self,
+        context: &str,
+        tracks: Vec<String>,
+    ) -> anyhow::Result<Vec<String>> {
+        let missing = tracks
+            .iter()
+            .filter(|uri| !self.index.tracks.contains_key(*uri))
+            .cloned()
+            .collect();
+        self.index.contexts.insert(context.to_owned(), tracks);
+        self.prune()?;
+        Ok(missing)
+    }
+
+    pub fn remove_context(&mut self, context: &str) -> anyhow::Result<()> {
+        if self.index.contexts.remove(context).is_some() {
+            self.prune()?;
+        }
+        Ok(())
+    }
+
+    /// Drops every song no kept context lists, with its file. A song kept
+    /// under a relinked URI too stays as long as either URI is listed.
+    fn prune(&mut self) -> anyhow::Result<()> {
+        let listed: BTreeSet<&String> = self.index.contexts.values().flatten().collect();
+        let kept: BTreeSet<String> = self
+            .index
+            .tracks
+            .iter()
+            .filter(|(uri, _)| listed.contains(uri))
+            .map(|(_, track)| track.file.clone())
+            .collect();
+        let dropped: BTreeSet<String> = self
+            .index
+            .tracks
+            .values()
+            .map(|track| track.file.clone())
+            .filter(|file| !kept.contains(file))
+            .collect();
+        self.index
+            .tracks
+            .retain(|_, track| kept.contains(&track.file));
+        self.save()?;
+        for file in dropped {
+            match std::fs::remove_file(self.dir.join(&file)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    log::warn!("unable to delete a removed download: {error}");
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn save(&self) -> anyhow::Result<()> {
         let json = serde_json::to_vec(&self.index)?;
         fastframe_file::write_private(&self.dir.join(INDEX_FILE), seal(&self.key, json)?)
             .context("unable to save the offline index")
     }
+}
+
+/// The downloads as the app shows them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Summary {
+    pub contexts: BTreeSet<String>,
+    pub tracks: BTreeSet<String>,
 }
 
 /// The store as the player reads it, shared with the downloads that fill it.
@@ -217,6 +298,38 @@ pub async fn restore(
     let dir = dir(dirs);
     let store = tokio::task::spawn_blocking(move || Store::open(dir, &key)).await??;
     Ok(Some(Arc::new(Downloads(RwLock::new(store)))))
+}
+
+/// Opens this account's downloads, making the offline key the first time
+/// anything is downloaded. A key the credential store could not be asked
+/// for is an error, never a new key, which would lock the old downloads.
+pub async fn open_or_create(
+    credentials: &crate::credentials::Store,
+    dirs: &crate::paths::AppDirs,
+) -> anyhow::Result<Arc<Downloads>> {
+    if let Some(downloads) = restore(credentials, dirs).await? {
+        return Ok(downloads);
+    }
+    let key = Store::new_key()?;
+    credentials
+        .lease(crate::credentials::Slot::Offline)
+        .save(crate::credentials::Grant::Offline(key.clone()))
+        .await?;
+    let dir = dir(dirs);
+    let store = tokio::task::spawn_blocking(move || Store::open(dir, &key)).await??;
+    Ok(Arc::new(Downloads(RwLock::new(store))))
+}
+
+/// Runs `change` on the store off the runtime's threads: it writes the disk.
+pub async fn change<T: Send + 'static>(
+    downloads: &Arc<Downloads>,
+    change: impl FnOnce(&mut Store) -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    let downloads = Arc::clone(downloads);
+    tokio::task::spawn_blocking(move || {
+        change(&mut downloads.0.write().unwrap_or_else(|p| p.into_inner()))
+    })
+    .await?
 }
 
 fn seal(key: &LessSafeKey, mut data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
@@ -451,6 +564,52 @@ mod tests {
         assert_eq!(downloads.get(&relinked).unwrap().path, dir.join("ab12"));
         let other = SpotifyUri::from_uri("spotify:track:0000000000000000000002").unwrap();
         assert!(downloads.get(&other).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_context_keeps_the_songs_another_still_lists() {
+        let dir = temp_dir("offline-contexts");
+        let mut store = Store::open(dir.clone(), &Store::new_key().unwrap()).unwrap();
+        let fetched = |uris: &[&str], file: &str| Fetched {
+            uris: uris.iter().map(|uri| uri.to_string()).collect(),
+            track: track(file),
+            encrypted: b"x".to_vec(),
+        };
+        let missing = store
+            .set_context(
+                "spotify:album:a",
+                vec!["spotify:track:one".into(), "spotify:track:two".into()],
+            )
+            .unwrap();
+        assert_eq!(missing, ["spotify:track:one", "spotify:track:two"]);
+        store.add(fetched(&["spotify:track:one"], "f1")).unwrap();
+        // Kept under the URI Spotify relinked it to as well.
+        store
+            .add(fetched(
+                &["spotify:track:two", "spotify:track:two-relinked"],
+                "f2",
+            ))
+            .unwrap();
+        let missing = store
+            .set_context(
+                "spotify:playlist:p",
+                vec!["spotify:track:two-relinked".into()],
+            )
+            .unwrap();
+        assert!(missing.is_empty());
+
+        store.remove_context("spotify:album:a").unwrap();
+        let summary = store.summary();
+        assert_eq!(summary.contexts.len(), 1);
+        assert!(store.get("spotify:track:one").is_none());
+        assert!(!dir.join("f1").exists());
+        assert!(store.get("spotify:track:two").is_some());
+        assert!(dir.join("f2").exists());
+
+        store.remove_context("spotify:playlist:p").unwrap();
+        assert_eq!(store.summary(), Summary::default());
+        assert!(!dir.join("f2").exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -375,6 +375,62 @@ pub fn actions_row(
                 app.actions.push(Action::ToggleSaved(uri.clone()));
             }
         }
+        if let Some(uri) = actions
+            .play_uri
+            .as_ref()
+            .filter(|uri| uri.starts_with("spotify:playlist:") || uri.starts_with("spotify:album:"))
+        {
+            let on = app.downloads.contexts.contains(uri);
+            let progress = app
+                .downloads
+                .progress
+                .as_ref()
+                .filter(|progress| progress.context == *uri);
+            let (icon, color, hover, tooltip) = if let Some(progress) = progress {
+                (
+                    Icon::CircleArrowDown,
+                    palette.accent,
+                    palette.accent_hover,
+                    gettext(locale, "Downloading {done} of {total}")
+                        .replace("{done}", &(progress.done + 1).to_string())
+                        .replace("{total}", &progress.total.to_string())
+                        .into(),
+                )
+            } else if on {
+                (
+                    Icon::CircleArrowDownFilled,
+                    palette.accent,
+                    palette.accent_hover,
+                    gettext(locale, "Remove download"),
+                )
+            } else {
+                (
+                    Icon::CircleArrowDown,
+                    palette.secondary,
+                    palette.text,
+                    gettext(locale, "Download"),
+                )
+            };
+            let button = theme::icon_button(ui, icon, 26.0, color, hover, &tooltip);
+            if let Some(progress) = progress {
+                // The ring fills as the songs arrive, as Spotify's does.
+                theme::paint_progress_ring(
+                    ui.painter(),
+                    button.rect.center(),
+                    16.0,
+                    progress.done as f32 / progress.total.max(1) as f32,
+                    palette.accent,
+                );
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(250));
+            }
+            if button.clicked() {
+                app.actions.push(Action::SetDownload {
+                    uri: uri.clone(),
+                    on: !on,
+                });
+            }
+        }
         if let Some(seed) = &actions.save_radio
             && theme::icon_button(
                 ui,

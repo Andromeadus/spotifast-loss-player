@@ -442,6 +442,8 @@ fastframe_icons::icons! {
         ChevronRight => lucide "chevron-right",
         ChevronUp => lucide "chevron-up",
         CircleAlert => lucide "circle-alert",
+        CircleArrowDown => "circle-arrow-down",
+        CircleArrowDownFilled => "circle-arrow-down-filled",
         CircleCheck => lucide "circle-check",
         CirclePlay => "circle-play",
         CirclePlus => "circle-plus",
@@ -929,6 +931,27 @@ pub fn spinner(ui: &mut egui::Ui, size: f32, color: Color32) -> Response {
             .add(egui::Shape::line(points, Stroke::new(2.0, color)));
     }
     response
+}
+
+/// A ring drawn clockwise from the top round `center`, `fraction` of the
+/// way: how far a download has got.
+pub fn paint_progress_ring(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    fraction: f32,
+    color: Color32,
+) {
+    let sweep = f64::from(fraction.clamp(0.0, 1.0)) * std::f64::consts::TAU;
+    let steps = 48;
+    let points = (0..=steps)
+        .map(|index| {
+            let angle = -std::f64::consts::FRAC_PI_2 + sweep * f64::from(index) / f64::from(steps);
+            let (sin, cos) = angle.sin_cos();
+            center + radius * egui::vec2(cos as f32, sin as f32)
+        })
+        .collect();
+    painter.add(egui::Shape::line(points, Stroke::new(2.0, color)));
 }
 
 /// Truncated single-line text in a given font and colour.

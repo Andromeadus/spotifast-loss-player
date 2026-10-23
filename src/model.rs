@@ -1093,6 +1093,11 @@ pub enum Action {
         label: String,
     },
     ToggleSaved(String),
+    /// Keep a playlist or album on this computer, or stop keeping it.
+    SetDownload {
+        uri: String,
+        on: bool,
+    },
     /// Queue several songs in order and show one notification.
     QueueMany {
         songs: Vec<(String, String)>,

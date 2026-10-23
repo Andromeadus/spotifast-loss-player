@@ -174,6 +174,20 @@ librespot provides:
   asking LRCLIB
   ([issue #1001](https://github.com/crmne/spotifast/issues/1001)).
 
+- Downloads, in this fork (Andromeadus/spotifast-loss-player). The Download
+  button beside a playlist's or album's heart keeps its songs on this
+  computer at 320 kbps, as the encrypted Ogg Vorbis files Spotify serves.
+  Each song's key is checked against its file, then kept in an index
+  sealed with a key from the system credential store, so the files play
+  only inside Spotifast. A ring round the button fills as songs arrive, the
+  song being fetched spins, and kept songs carry a green arrow. Turning a
+  download off deletes the songs no other download lists. Whenever playback
+  connects, every download is read again, so songs added since are fetched
+  and songs removed since are deleted. librespot's player plays a kept song
+  from disk before asking the network, through the fork's `offline`
+  branch (Andromeadus/librespot). Playing with no network at all is not
+  finished yet; see `docs/plans/offline-downloads.md`.
+
 Spotify Premium is required. librespot cannot play audio with a free account.
 
 Spotifast uses a small librespot fork: librespot's development branch with a
@@ -213,8 +227,8 @@ The Web API and librespot do not provide these features:
 - **Audiobooks.** librespot does not play them. Spotify lists some
   audiobooks among saved shows; since 0.10.0, Spotifast asks the
   librespot session which ones and leaves them out of the Podcasts shelf.
-- **Offline listening and downloads.** Spotify's DRM and the project's scope
-  rule these out.
+- **Lossless downloads.** Downloads stay at 320 kbps for the reason under
+  **Lossless audio**.
 - **Playback speed and crossfade.** librespot supports neither. Spotifast
   would have to add them to its own audio path.
 - **Free-account playback.** Replacing Spotify audio with another source is

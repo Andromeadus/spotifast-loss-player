@@ -1722,6 +1722,7 @@ fn track_row_contents(
         );
         match row.item {
             PlayableItem::Track(track) => {
+                download_badge(&mut child, app, &track.uri);
                 if track.explicit {
                     explicit_badge(&mut child, &palette);
                 }
@@ -1816,6 +1817,7 @@ fn track_row_contents(
             ui.set_max_width(title_rect.width());
             match row.item {
                 PlayableItem::Track(track) => {
+                    download_badge(ui, app, &track.uri);
                     if track.explicit {
                         explicit_badge(ui, &palette);
                     }
@@ -2253,6 +2255,23 @@ pub fn drag_ghost(ctx: &egui::Context, palette: &Palette, locale: Locale) {
                     });
                 });
         });
+}
+
+/// A spinner on the song downloading now, and the green arrow on a song
+/// kept on this computer.
+pub fn download_badge(ui: &mut Ui, app: &App, uri: &str) {
+    let palette = app.palette;
+    if app
+        .downloads
+        .progress
+        .as_ref()
+        .is_some_and(|progress| progress.song == uri)
+    {
+        theme::spinner(ui, 14.0, palette.accent);
+    } else if app.downloads.tracks.contains(uri) {
+        theme::icon(ui, Icon::CircleArrowDownFilled, 14.0, palette.accent)
+            .on_hover_text(gettext(app.locale, "Downloaded").as_ref());
+    }
 }
 
 pub fn explicit_badge(ui: &mut Ui, palette: &Palette) {

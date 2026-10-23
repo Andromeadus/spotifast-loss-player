@@ -644,6 +644,8 @@ pub struct App {
     intent_track: Option<TrackIntent>,
     /// The row the current song was started from, while it still plays.
     played_row: Option<PlayedRow>,
+    /// The playlists and albums kept on this computer and their songs.
+    pub downloads: crate::backend::DownloadsState,
     /// The songs found in the local files folder, as the `spotify:local:`
     /// URIs a playlist lists them by; `None` until the folder is read.
     pub local_files: Option<(
@@ -1235,6 +1237,7 @@ impl App {
             intent_track: None,
             played_row: None,
             local_files: None,
+            downloads: Default::default(),
             shuffle_wanted: session.shuffle_on,
             repeat_wanted: RepeatMode::from_api(&session.repeat),
             shuffle_set_at: None,
@@ -2457,6 +2460,7 @@ impl App {
                     self.set_local_files_folder(Some(folder));
                 }
                 Event::LocalFilesFolderChosen(None) => {}
+                Event::Downloads(downloads) => self.downloads = downloads,
                 Event::LocalFiles { folder, uris } => {
                     // A scan of a folder since replaced says nothing now.
                     if self.settings.local_files_folder().as_ref() == Some(&folder) {
@@ -10882,6 +10886,15 @@ impl App {
                 if !uris.is_empty() {
                     self.backend.api(ApiRequest::SetSaved { uris, saved });
                 }
+            }
+            Action::SetDownload { uri, on } => {
+                // Shown at once; the backend's next state agrees.
+                if on {
+                    self.downloads.contexts.insert(uri.clone());
+                } else {
+                    self.downloads.contexts.remove(&uri);
+                }
+                self.backend.set_download(uri, on);
             }
             Action::ToggleSaved(uri) => {
                 let saved = self.is_saved(&uri).unwrap_or(false);
@@ -24354,6 +24367,29 @@ mod tests {
             !app.track_cache.contains_key("one"),
             "the song left behind can go"
         );
+    }
+
+    #[test]
+    fn the_download_button_shows_its_state_at_once() {
+        let mut app = headless_app();
+        let ctx = egui::Context::default();
+        let album = "spotify:album:4aawyAB9vmqN3uQ7FjRGTy".to_string();
+        app.apply(
+            Action::SetDownload {
+                uri: album.clone(),
+                on: true,
+            },
+            &ctx,
+        );
+        assert!(app.downloads.contexts.contains(&album));
+        app.apply(
+            Action::SetDownload {
+                uri: album.clone(),
+                on: false,
+            },
+            &ctx,
+        );
+        assert!(!app.downloads.contexts.contains(&album));
     }
 
     #[test]

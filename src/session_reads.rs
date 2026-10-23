@@ -1566,22 +1566,8 @@ async fn metadata_tolerating(
 /// own order, with the album as the list knows it. Two metadata batches: one
 /// for the albums' track lists, one for the songs.
 pub async fn album_tracks(session: &Session, albums: &[Album]) -> Result<Vec<Track>, Failure> {
-    let mut request = BatchedEntityRequest::new();
-    for album in albums {
-        request.entity_request.push(EntityRequest {
-            entity_uri: album.uri.clone(),
-            query: vec![ExtensionQuery {
-                extension_kind: EnumOrUnknown::new(ExtensionKind::ALBUM_V4),
-                ..Default::default()
-            }],
-            ..Default::default()
-        });
-    }
-    if request.entity_request.is_empty() {
-        return Ok(Vec::new());
-    }
-    let response = session.spclient().get_extended_metadata(request).await?;
-    let lists = album_track_lists(&response)?;
+    let uris: Vec<&str> = albums.iter().map(|album| album.uri.as_str()).collect();
+    let lists = album_song_uris(session, &uris).await?;
     let uris: Vec<SpotifyUri> = albums
         .iter()
         .flat_map(|album| lists.get(&album.uri).into_iter().flatten())
@@ -1602,6 +1588,68 @@ pub async fn album_tracks(session: &Session, albums: &[Album]) -> Result<Vec<Tra
         }
     }
     Ok(tracks)
+}
+
+/// The song URIs of a playlist or album, in order, without their details:
+/// what a download keeps. A playlist's episodes and local files are left
+/// out, since neither can be downloaded.
+pub async fn song_uris(session: &Session, context: &str) -> Result<Vec<String>, Failure> {
+    const PAGE: u32 = 500;
+    if context.starts_with("spotify:album:") {
+        let lists = album_song_uris(session, &[context]).await?;
+        return Ok(lists
+            .get(context)
+            .into_iter()
+            .flatten()
+            .map(SpotifyUri::to_uri)
+            .collect());
+    }
+    let id = context.strip_prefix("spotify:playlist:").ok_or_else(|| {
+        Failure::Definitive(ApiError::Status {
+            status: 400,
+            message: format!("{context} is neither a playlist nor an album"),
+        })
+    })?;
+    let mut uris = Vec::new();
+    let mut offset = 0;
+    loop {
+        let list = window(session, id, offset, PAGE).await?;
+        let rows = rows(&list, offset, PAGE);
+        let total = total(&list);
+        complete(rows.len(), offset, PAGE, total)?;
+        uris.extend(
+            rows.iter()
+                .filter(|row| matches!(row.id, SpotifyUri::Track { .. }))
+                .map(|row| row.id.to_uri()),
+        );
+        offset = offset.saturating_add(rows.len() as u32);
+        if rows.is_empty() || offset >= total {
+            return Ok(uris);
+        }
+    }
+}
+
+/// Each album's song URIs, by album URI, in one `ALBUM_V4` request.
+async fn album_song_uris(
+    session: &Session,
+    albums: &[&str],
+) -> Result<HashMap<String, Vec<SpotifyUri>>, Failure> {
+    let mut request = BatchedEntityRequest::new();
+    for album in albums {
+        request.entity_request.push(EntityRequest {
+            entity_uri: (*album).to_string(),
+            query: vec![ExtensionQuery {
+                extension_kind: EnumOrUnknown::new(ExtensionKind::ALBUM_V4),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+    }
+    if request.entity_request.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let response = session.spclient().get_extended_metadata(request).await?;
+    album_track_lists(&response)
 }
 
 /// Each album's songs, by album URI, from an `ALBUM_V4` metadata answer.

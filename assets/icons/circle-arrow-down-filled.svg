@@ -1,0 +1,11 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="#ffffff"
+  fill-rule="evenodd"
+  stroke="none"
+>
+  <path d="M12 1a11 11 0 1 0 0 22a11 11 0 1 0 0-22z M11 7h2v6.17l2.29-2.29 1.42 1.42L12 17l-4.71-4.7 1.42-1.42L11 13.17z" />
+</svg>
