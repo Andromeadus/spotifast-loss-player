@@ -128,7 +128,8 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
 - Step 4 done (playlists and albums): the Download button, a ring that
   fills while songs arrive, a spinner on the song fetching, green arrows on
   kept songs, and a re-read of every download whenever playback connects.
-  Liked Songs downloads are not done.
+  Liked Songs download too (added 2026-10-23), read over the session
+  from the account's `collection` set, newest first.
 - Steps 3b and 3c done (tested 2026-10-23, macOS): with no engine, the
   backend plays downloads on a player over an unconnected session, keeps
   the play order, and moves on at each song's end. Offline, a play goes

@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: Spotifast\n"
 "Report-Msgid-Bugs-To: https://github.com/crmne/spotifast/issues/new?"
 "template=translation.yml\n"
-"POT-Creation-Date: 2026-10-23 16:40-0500\n"
+"POT-Creation-Date: 2026-10-23 17:06-0500\n"
 "PO-Revision-Date: 2026-09-09 13:30+0000\n"
 "Last-Translator: Spotifast contributors\n"
 "Language-Team: Simplified Chinese\n"
@@ -30,13 +30,13 @@ msgstr "播放 {name}"
 
 #: src/ui/sidebar.rs:302 src/app.rs:3364 src/app.rs:21956
 #: src/ui/collection.rs:2176 src/ui/collection.rs:2393
-#: src/ui/collection.rs:2720 src/ui/collection.rs:2778
+#: src/ui/collection.rs:2722 src/ui/collection.rs:2780
 msgid "Playlist"
 msgstr "歌单"
 
 #: src/ui/sidebar.rs:312 src/ui/friends.rs:286 src/app.rs:3338 src/app.rs:21961
-#: src/ui/collection.rs:2386 src/ui/home.rs:93 src/ui/keys.rs:264
-#: src/ui/winamp/playlist.rs:653
+#: src/ui/collection.rs:2386 src/ui/collection.rs:2716 src/ui/home.rs:93
+#: src/ui/keys.rs:264 src/ui/winamp/playlist.rs:653
 msgid "Liked Songs"
 msgstr "已点赞的歌曲"
 
@@ -319,7 +319,7 @@ msgid "Recent"
 msgstr "最近播放"
 
 #: src/ui/queue.rs:92 src/ui/queue.rs:241 src/ui/lyrics.rs:78
-#: src/ui/friends.rs:65 src/ui/mod.rs:641
+#: src/ui/friends.rs:65 src/ui/mod.rs:644
 msgid "Close"
 msgstr "关闭"
 
@@ -758,8 +758,8 @@ msgstr "Spotify 音频已断开，正在重新连接本地播放"
 msgid "Radio"
 msgstr "电台"
 
-#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2718
-#: src/ui/collection.rs:2776 src/ui/prerelease.rs:71
+#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2720
+#: src/ui/collection.rs:2778 src/ui/prerelease.rs:71
 msgid "Album"
 msgstr "专辑"
 
@@ -1117,7 +1117,7 @@ msgstr "无法切换随机播放"
 msgid "Couldn't change repeat"
 msgstr "无法切换循环模式"
 
-#: src/app.rs:13201 src/ui/mod.rs:408
+#: src/app.rs:13201 src/ui/mod.rs:411
 msgid "Spotify won't let this computer play this song right now."
 msgstr "Spotify 现在不让这台电脑播放这首歌。"
 
@@ -2308,11 +2308,11 @@ msgid "and {count} other"
 msgid_plural "and {count} others"
 msgstr[0] "及其他 {count} 人"
 
-#: src/ui/collection.rs:2645 src/ui/collection.rs:2740
+#: src/ui/collection.rs:2645 src/ui/collection.rs:2742
 msgid "Nothing downloaded yet"
 msgstr "还没有下载内容"
 
-#: src/ui/collection.rs:2648 src/ui/collection.rs:2743
+#: src/ui/collection.rs:2648 src/ui/collection.rs:2745
 msgid ""
 "Use the download button on a playlist or album to keep it on this computer."
 msgstr "使用播放列表或专辑上的下载按钮，即可将其保存在这台电脑上。"
@@ -2400,7 +2400,7 @@ msgstr ""
 "所有 Spotifast 用户共用一个应用，Spotify 在繁忙时会限制它的速度。设置你自己的"
 "个人 Spotify 应用，就不用再等了。它是免费的，只需几分钟。"
 
-#: src/ui/dialogs.rs:50 src/ui/mod.rs:383
+#: src/ui/dialogs.rs:50 src/ui/mod.rs:386
 msgid "Set up personal app"
 msgstr "设置个人应用"
 
@@ -2837,11 +2837,11 @@ msgstr "代理设置"
 msgid "Spotifast {version} • not affiliated with Spotify"
 msgstr "Spotifast {version} • 与 Spotify 无关"
 
-#: src/ui/mod.rs:376
+#: src/ui/mod.rs:379
 msgid "Spotify is being slow on the shared app."
 msgstr "Spotify 在共享应用上响应很慢。"
 
-#: src/ui/mod.rs:379
+#: src/ui/mod.rs:382
 msgid ""
 "Set up your own personal Spotify app and you won't have to wait. It's free "
 "and takes a few minutes."
@@ -2849,11 +2849,11 @@ msgstr "设置你自己的个人 Spotify 应用，就不用再等了。它是免
 
 #. Translators: a button that opens a page explaining why
 #. the banner it sits in appeared.
-#: src/ui/mod.rs:389 src/ui/mod.rs:420
+#: src/ui/mod.rs:392 src/ui/mod.rs:423
 msgid "Why?"
 msgstr "为什么？"
 
-#: src/ui/mod.rs:412
+#: src/ui/mod.rs:415
 msgid ""
 "Spotify refused the key that unlocks the audio. Spotifast can't fix that, "
 "but it sometimes clears up on its own. You can still play on your phone or "
@@ -2862,23 +2862,23 @@ msgstr ""
 "Spotify 拒绝提供解锁音频的密钥。Spotifast 没法解决，但有时过一会儿会自己恢"
 "复。你仍然可以在手机或其他 Spotify 设备上播放。"
 
-#: src/ui/mod.rs:416
+#: src/ui/mod.rs:419
 msgid "Play on another device"
 msgstr "在其他设备上播放"
 
-#: src/ui/mod.rs:467
+#: src/ui/mod.rs:470
 msgid "Close banner"
 msgstr "关闭横幅"
 
-#: src/ui/mod.rs:638
+#: src/ui/mod.rs:641
 msgid "Minimize"
 msgstr "最小化"
 
-#: src/ui/mod.rs:639
+#: src/ui/mod.rs:642
 msgid "Maximize"
 msgstr "最大化"
 
-#: src/ui/mod.rs:640
+#: src/ui/mod.rs:643
 msgid "Restore"
 msgstr "还原"
 

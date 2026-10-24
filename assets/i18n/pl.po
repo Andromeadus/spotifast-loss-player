@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: Spotifast\n"
 "Report-Msgid-Bugs-To: https://github.com/crmne/spotifast/issues/new?"
 "template=translation.yml\n"
-"POT-Creation-Date: 2026-10-23 16:40-0500\n"
+"POT-Creation-Date: 2026-10-23 17:06-0500\n"
 "PO-Revision-Date: 2026-09-09 13:30+0000\n"
 "Last-Translator: Spotifast contributors\n"
 "Language-Team: Polish\n"
@@ -31,13 +31,13 @@ msgstr "Odtwórz {name}"
 
 #: src/ui/sidebar.rs:302 src/app.rs:3364 src/app.rs:21956
 #: src/ui/collection.rs:2176 src/ui/collection.rs:2393
-#: src/ui/collection.rs:2720 src/ui/collection.rs:2778
+#: src/ui/collection.rs:2722 src/ui/collection.rs:2780
 msgid "Playlist"
 msgstr "Playlista"
 
 #: src/ui/sidebar.rs:312 src/ui/friends.rs:286 src/app.rs:3338 src/app.rs:21961
-#: src/ui/collection.rs:2386 src/ui/home.rs:93 src/ui/keys.rs:264
-#: src/ui/winamp/playlist.rs:653
+#: src/ui/collection.rs:2386 src/ui/collection.rs:2716 src/ui/home.rs:93
+#: src/ui/keys.rs:264 src/ui/winamp/playlist.rs:653
 msgid "Liked Songs"
 msgstr "Polubione utwory"
 
@@ -328,7 +328,7 @@ msgid "Recent"
 msgstr "Ostatnie"
 
 #: src/ui/queue.rs:92 src/ui/queue.rs:241 src/ui/lyrics.rs:78
-#: src/ui/friends.rs:65 src/ui/mod.rs:641
+#: src/ui/friends.rs:65 src/ui/mod.rs:644
 msgid "Close"
 msgstr "Zamknij"
 
@@ -776,8 +776,8 @@ msgstr "Dźwięk Spotify rozłączony. Ponowne łączenie lokalnego odtwarzania"
 msgid "Radio"
 msgstr "Radio"
 
-#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2718
-#: src/ui/collection.rs:2776 src/ui/prerelease.rs:71
+#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2720
+#: src/ui/collection.rs:2778 src/ui/prerelease.rs:71
 msgid "Album"
 msgstr "Album"
 
@@ -1151,7 +1151,7 @@ msgstr "Nie udało się zmienić odtwarzania losowego"
 msgid "Couldn't change repeat"
 msgstr "Nie udało się zmienić powtarzania"
 
-#: src/app.rs:13201 src/ui/mod.rs:408
+#: src/app.rs:13201 src/ui/mod.rs:411
 msgid "Spotify won't let this computer play this song right now."
 msgstr "Spotify nie pozwala teraz odtworzyć tego utworu na tym komputerze."
 
@@ -2417,11 +2417,11 @@ msgstr[0] "i {count} inna osoba"
 msgstr[1] "i {count} inne osoby"
 msgstr[2] "i {count} innych osób"
 
-#: src/ui/collection.rs:2645 src/ui/collection.rs:2740
+#: src/ui/collection.rs:2645 src/ui/collection.rs:2742
 msgid "Nothing downloaded yet"
 msgstr "Nic jeszcze nie pobrano"
 
-#: src/ui/collection.rs:2648 src/ui/collection.rs:2743
+#: src/ui/collection.rs:2648 src/ui/collection.rs:2745
 msgid ""
 "Use the download button on a playlist or album to keep it on this computer."
 msgstr ""
@@ -2434,7 +2434,9 @@ msgstr "Połącz się z internetem, aby dalej odtwarzać pobrane"
 
 #: src/ui/collection.rs:2701
 msgid "Downloads play offline for 30 days after Spotifast was last online."
-msgstr "Pobrane utwory grają offline przez 30 dni od ostatniego połączenia Spotifast z internetem."
+msgstr ""
+"Pobrane utwory grają offline przez 30 dni od ostatniego połączenia Spotifast "
+"z internetem."
 
 #: src/ui/collection.rs:2705
 msgid "Downloads need Spotify Premium"
@@ -2513,7 +2515,7 @@ msgstr ""
 "aplikację Spotify i nie trzeba będzie czekać. To nic nie kosztuje i zajmuje "
 "kilka minut."
 
-#: src/ui/dialogs.rs:50 src/ui/mod.rs:383
+#: src/ui/dialogs.rs:50 src/ui/mod.rs:386
 msgid "Set up personal app"
 msgstr "Skonfiguruj osobistą aplikację"
 
@@ -2960,11 +2962,11 @@ msgstr "Ustawienia proxy"
 msgid "Spotifast {version} • not affiliated with Spotify"
 msgstr "Spotifast {version} • niepowiązany ze Spotify"
 
-#: src/ui/mod.rs:376
+#: src/ui/mod.rs:379
 msgid "Spotify is being slow on the shared app."
 msgstr "Spotify działa wolno we wspólnej aplikacji."
 
-#: src/ui/mod.rs:379
+#: src/ui/mod.rs:382
 msgid ""
 "Set up your own personal Spotify app and you won't have to wait. It's free "
 "and takes a few minutes."
@@ -2974,11 +2976,11 @@ msgstr ""
 
 #. Translators: a button that opens a page explaining why
 #. the banner it sits in appeared.
-#: src/ui/mod.rs:389 src/ui/mod.rs:420
+#: src/ui/mod.rs:392 src/ui/mod.rs:423
 msgid "Why?"
 msgstr "Dlaczego?"
 
-#: src/ui/mod.rs:412
+#: src/ui/mod.rs:415
 msgid ""
 "Spotify refused the key that unlocks the audio. Spotifast can't fix that, "
 "but it sometimes clears up on its own. You can still play on your phone or "
@@ -2988,23 +2990,23 @@ msgstr ""
 "naprawić, ale czasem samo przechodzi. Nadal możesz słuchać na telefonie lub "
 "innym urządzeniu ze Spotify."
 
-#: src/ui/mod.rs:416
+#: src/ui/mod.rs:419
 msgid "Play on another device"
 msgstr "Odtwórz na innym urządzeniu"
 
-#: src/ui/mod.rs:467
+#: src/ui/mod.rs:470
 msgid "Close banner"
 msgstr "Zamknij baner"
 
-#: src/ui/mod.rs:638
+#: src/ui/mod.rs:641
 msgid "Minimize"
 msgstr "Minimalizuj"
 
-#: src/ui/mod.rs:639
+#: src/ui/mod.rs:642
 msgid "Maximize"
 msgstr "Maksymalizuj"
 
-#: src/ui/mod.rs:640
+#: src/ui/mod.rs:643
 msgid "Restore"
 msgstr "Przywróć"
 

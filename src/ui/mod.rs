@@ -329,6 +329,9 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                                 Page::TopSongs => collection::top_songs(app, ui),
                                 Page::NewReleases => new_releases::page(app, ui),
                                 Page::Search => search::show(app, ui),
+                                Page::LikedSongs if let Some(uri) = &offline_uri => {
+                                    collection::download(app, ui, uri);
+                                }
                                 Page::LikedSongs => collection::liked(app, ui),
                                 Page::Albums | Page::Artists | Page::Podcasts | Page::Episodes => {
                                     library::show(app, ui, page)
@@ -781,6 +784,7 @@ pub(crate) fn offline_download(app: &App, page: &Page) -> Option<String> {
     let uri = match page {
         Page::Playlist(id) => format!("spotify:playlist:{id}"),
         Page::Album(id) => format!("spotify:album:{id}"),
+        Page::LikedSongs => format!("spotify:user:{}:collection", app.user_id()?),
         _ => return None,
     };
     app.downloads.contexts.contains(&uri).then_some(uri)

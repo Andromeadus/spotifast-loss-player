@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: Spotifast\n"
 "Report-Msgid-Bugs-To: https://github.com/crmne/spotifast/issues/new?"
 "template=translation.yml\n"
-"POT-Creation-Date: 2026-10-23 16:40-0500\n"
+"POT-Creation-Date: 2026-10-23 17:06-0500\n"
 "PO-Revision-Date: 2026-10-15 12:00+0900\n"
 "Last-Translator: Spotifast contributors\n"
 "Language-Team: Korean\n"
@@ -30,13 +30,13 @@ msgstr "{name} 재생"
 
 #: src/ui/sidebar.rs:302 src/app.rs:3364 src/app.rs:21956
 #: src/ui/collection.rs:2176 src/ui/collection.rs:2393
-#: src/ui/collection.rs:2720 src/ui/collection.rs:2778
+#: src/ui/collection.rs:2722 src/ui/collection.rs:2780
 msgid "Playlist"
 msgstr "플레이리스트"
 
 #: src/ui/sidebar.rs:312 src/ui/friends.rs:286 src/app.rs:3338 src/app.rs:21961
-#: src/ui/collection.rs:2386 src/ui/home.rs:93 src/ui/keys.rs:264
-#: src/ui/winamp/playlist.rs:653
+#: src/ui/collection.rs:2386 src/ui/collection.rs:2716 src/ui/home.rs:93
+#: src/ui/keys.rs:264 src/ui/winamp/playlist.rs:653
 msgid "Liked Songs"
 msgstr "좋아요 표시한 곡"
 
@@ -319,7 +319,7 @@ msgid "Recent"
 msgstr "최근 항목"
 
 #: src/ui/queue.rs:92 src/ui/queue.rs:241 src/ui/lyrics.rs:78
-#: src/ui/friends.rs:65 src/ui/mod.rs:641
+#: src/ui/friends.rs:65 src/ui/mod.rs:644
 msgid "Close"
 msgstr "닫기"
 
@@ -763,8 +763,8 @@ msgstr "Spotify 오디오 연결이 끊어졌습니다. 로컬 재생을 다시 
 msgid "Radio"
 msgstr "라디오"
 
-#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2718
-#: src/ui/collection.rs:2776 src/ui/prerelease.rs:71
+#: src/app.rs:3380 src/api/models.rs:299 src/ui/collection.rs:2720
+#: src/ui/collection.rs:2778 src/ui/prerelease.rs:71
 msgid "Album"
 msgstr "앨범"
 
@@ -1129,7 +1129,7 @@ msgstr "셔플을 변경하지 못했습니다"
 msgid "Couldn't change repeat"
 msgstr "반복을 변경하지 못했습니다"
 
-#: src/app.rs:13201 src/ui/mod.rs:408
+#: src/app.rs:13201 src/ui/mod.rs:411
 msgid "Spotify won't let this computer play this song right now."
 msgstr "Spotify가 지금 이 컴퓨터에서 이 곡을 재생하지 못하게 하고 있습니다."
 
@@ -2355,11 +2355,11 @@ msgid "and {count} other"
 msgid_plural "and {count} others"
 msgstr[0] "외 {count}명 참여"
 
-#: src/ui/collection.rs:2645 src/ui/collection.rs:2740
+#: src/ui/collection.rs:2645 src/ui/collection.rs:2742
 msgid "Nothing downloaded yet"
 msgstr "아직 다운로드한 항목이 없습니다"
 
-#: src/ui/collection.rs:2648 src/ui/collection.rs:2743
+#: src/ui/collection.rs:2648 src/ui/collection.rs:2745
 msgid ""
 "Use the download button on a playlist or album to keep it on this computer."
 msgstr ""
@@ -2372,7 +2372,9 @@ msgstr "다운로드를 계속 재생하려면 온라인에 연결하세요"
 
 #: src/ui/collection.rs:2701
 msgid "Downloads play offline for 30 days after Spotifast was last online."
-msgstr "다운로드는 Spotifast가 마지막으로 온라인에 연결된 후 30일 동안 오프라인으로 재생됩니다."
+msgstr ""
+"다운로드는 Spotifast가 마지막으로 온라인에 연결된 후 30일 동안 오프라인으로 "
+"재생됩니다."
 
 #: src/ui/collection.rs:2705
 msgid "Downloads need Spotify Premium"
@@ -2451,7 +2453,7 @@ msgstr ""
 "앱의 속도를 늦춥니다. 나만의 개인 Spotify 앱을 설정하면 기다릴 필요가 없습니"
 "다. 무료이며 몇 분이면 됩니다."
 
-#: src/ui/dialogs.rs:50 src/ui/mod.rs:383
+#: src/ui/dialogs.rs:50 src/ui/mod.rs:386
 msgid "Set up personal app"
 msgstr "개인 앱 설정"
 
@@ -2893,11 +2895,11 @@ msgstr "프록시 설정"
 msgid "Spotifast {version} • not affiliated with Spotify"
 msgstr "Spotifast {version} • Spotify와 관련 없음"
 
-#: src/ui/mod.rs:376
+#: src/ui/mod.rs:379
 msgid "Spotify is being slow on the shared app."
 msgstr "공유 앱에서 Spotify가 느려지고 있습니다."
 
-#: src/ui/mod.rs:379
+#: src/ui/mod.rs:382
 msgid ""
 "Set up your own personal Spotify app and you won't have to wait. It's free "
 "and takes a few minutes."
@@ -2907,11 +2909,11 @@ msgstr ""
 
 #. Translators: a button that opens a page explaining why
 #. the banner it sits in appeared.
-#: src/ui/mod.rs:389 src/ui/mod.rs:420
+#: src/ui/mod.rs:392 src/ui/mod.rs:423
 msgid "Why?"
 msgstr "이유는?"
 
-#: src/ui/mod.rs:412
+#: src/ui/mod.rs:415
 msgid ""
 "Spotify refused the key that unlocks the audio. Spotifast can't fix that, "
 "but it sometimes clears up on its own. You can still play on your phone or "
@@ -2921,23 +2923,23 @@ msgstr ""
 "없지만, 저절로 해결되기도 합니다. 휴대폰이나 다른 Spotify 기기에서는 계속 재"
 "생할 수 있습니다."
 
-#: src/ui/mod.rs:416
+#: src/ui/mod.rs:419
 msgid "Play on another device"
 msgstr "다른 기기에서 재생"
 
-#: src/ui/mod.rs:467
+#: src/ui/mod.rs:470
 msgid "Close banner"
 msgstr "배너 닫기"
 
-#: src/ui/mod.rs:638
+#: src/ui/mod.rs:641
 msgid "Minimize"
 msgstr "최소화"
 
-#: src/ui/mod.rs:639
+#: src/ui/mod.rs:642
 msgid "Maximize"
 msgstr "최대화"
 
-#: src/ui/mod.rs:640
+#: src/ui/mod.rs:643
 msgid "Restore"
 msgstr "복원"
 

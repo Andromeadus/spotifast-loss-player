@@ -24480,6 +24480,18 @@ mod tests {
             crate::ui::offline_download(&app, &Page::Album("other".into())),
             None
         );
+        // Liked Songs, by the account's collection URI.
+        app.user = Some(User {
+            id: "alice".into(),
+            ..Default::default()
+        });
+        app.downloads
+            .contexts
+            .insert("spotify:user:alice:collection".into());
+        assert_eq!(
+            crate::ui::offline_download(&app, &Page::LikedSongs).as_deref(),
+            Some("spotify:user:alice:collection")
+        );
     }
 
     #[test]

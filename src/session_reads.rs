@@ -203,6 +203,40 @@ pub async fn prerelease(
 /// playlist ("Hide in this playlist"), one item per song and playlist.
 const HIDDEN_SONGS: &str = "playcontextbans";
 
+/// The collection set of the account's Liked Songs.
+const LIKED_SONGS: &str = "collection";
+
+/// The account's Liked Songs, newest first as their page lists them.
+async fn liked_song_uris(session: &Session) -> anyhow::Result<Vec<String>> {
+    let mut liked = Vec::new();
+    let mut token = String::new();
+    // 500 a page; a page that repeats its token would loop.
+    for _ in 0..400 {
+        let page = session
+            .spclient()
+            .get_collection_page(LIKED_SONGS, &token, 500)
+            .await?;
+        liked.extend(liked_items(&page.items));
+        if page.next_page_token.is_empty() || page.next_page_token == token {
+            liked.sort_by_key(|(added_at, _)| std::cmp::Reverse(*added_at));
+            return Ok(liked.into_iter().map(|(_, uri)| uri).collect());
+        }
+        token = page.next_page_token;
+    }
+    anyhow::bail!("Spotify kept paging the Liked Songs")
+}
+
+/// The liked songs among a collection page's items, with when each was
+/// liked; removals and anything but songs are left out.
+fn liked_items(
+    items: &[librespot_protocol::collection2v2::CollectionItem],
+) -> impl Iterator<Item = (i64, String)> + '_ {
+    items
+        .iter()
+        .filter(|item| !item.is_removed && item.uri.starts_with("spotify:track:"))
+        .map(|item| (item.added_at, item.uri.clone()))
+}
+
 /// Every song the account hid in a playlist, as (playlist URI, song URI).
 pub async fn hidden_songs(session: &Session) -> anyhow::Result<Vec<(String, String)>> {
     let mut hidden = Vec::new();
@@ -1595,6 +1629,9 @@ pub async fn album_tracks(session: &Session, albums: &[Album]) -> Result<Vec<Tra
 /// out, since neither can be downloaded.
 pub async fn song_uris(session: &Session, context: &str) -> Result<Vec<String>, Failure> {
     const PAGE: u32 = 500;
+    if context.ends_with(":collection") {
+        return liked_song_uris(session).await.map_err(Failure::Retry);
+    }
     if context.starts_with("spotify:album:") {
         let lists = album_song_uris(session, &[context]).await?;
         return Ok(lists
@@ -1962,6 +1999,24 @@ mod tests {
     use librespot_metadata::Metadata as _;
 
     use super::*;
+
+    #[test]
+    fn liked_songs_are_the_songs_still_liked() {
+        use librespot_protocol::collection2v2::CollectionItem;
+        let item = |uri: &str, added_at: i64, is_removed: bool| CollectionItem {
+            uri: uri.into(),
+            added_at,
+            is_removed,
+            ..CollectionItem::default()
+        };
+        let items = [
+            item("spotify:track:kept", 2, false),
+            item("spotify:track:unliked", 3, true),
+            item("spotify:episode:saved", 4, false),
+        ];
+        let liked: Vec<_> = liked_items(&items).collect();
+        assert_eq!(liked, [(2, "spotify:track:kept".to_string())]);
+    }
 
     const TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     const EPISODE: &str = "spotify:episode:7GhIk7Il098yCjg4BQjzvb";

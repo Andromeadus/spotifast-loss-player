@@ -375,11 +375,11 @@ pub fn actions_row(
                 app.actions.push(Action::ToggleSaved(uri.clone()));
             }
         }
-        if let Some(uri) = actions
-            .play_uri
-            .as_ref()
-            .filter(|uri| uri.starts_with("spotify:playlist:") || uri.starts_with("spotify:album:"))
-        {
+        if let Some(uri) = actions.play_uri.as_ref().filter(|uri| {
+            uri.starts_with("spotify:playlist:")
+                || uri.starts_with("spotify:album:")
+                || uri.ends_with(":collection")
+        }) {
             let on = app.downloads.contexts.contains(uri);
             let progress = app
                 .downloads
@@ -2712,7 +2712,9 @@ fn downloads_blocked(app: &App, ui: &mut egui::Ui) -> bool {
 
 /// A kept list's name, or its kind when it was kept without one.
 fn download_name(locale: Locale, list: &crate::offline::KeptList) -> String {
-    if !list.name.name.is_empty() {
+    if list.uri.ends_with(":collection") {
+        gettext(locale, "Liked Songs").into_owned()
+    } else if !list.name.name.is_empty() {
         list.name.name.clone()
     } else if list.uri.starts_with("spotify:album:") {
         gettext(locale, "Album").into_owned()

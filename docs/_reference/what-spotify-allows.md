@@ -175,8 +175,8 @@ librespot provides:
   ([issue #1001](https://github.com/crmne/spotifast/issues/1001)).
 
 - Downloads, in this fork (Andromeadus/spotifast-loss-player). The Download
-  button beside a playlist's or album's heart keeps its songs on this
-  computer at 320 kbps, as the encrypted Ogg Vorbis files Spotify serves.
+  button beside a playlist's or album's heart, or on Liked Songs, keeps
+  its songs on this computer at 320 kbps, as the encrypted Ogg Vorbis files Spotify serves.
   Each song's key is checked against its file, then kept in an index
   sealed with a key from the system credential store, so the files play
   only inside Spotifast. A ring round the button fills as songs arrive, the
