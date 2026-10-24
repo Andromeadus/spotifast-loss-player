@@ -71,6 +71,9 @@ const NEW_RELEASES_PER_ARTIST: u32 = 10;
 /// grant (#818). The last delay repeats, so a session lost overnight comes
 /// back on its own at the cost of one connection attempt every ten minutes.
 const ENGINE_RETRY_DELAYS: [u64; 6] = [5, 15, 60, 120, 300, 600];
+/// How often playback tries to reconnect while it cannot reach Spotify at
+/// all, where the system does not report the network.
+const OFFLINE_RETRY_SECONDS: u64 = 15;
 
 async fn connect_engine_with_deadline<F: std::future::Future>(
     connect: F,
@@ -1867,6 +1870,11 @@ struct Worker {
     offline_playback: Option<OfflinePlayback>,
     /// What was last asked to play, for the offline player to carry on with.
     last_load: Option<LoadSpec>,
+    /// The system says nothing reliable about reaching the internet (Linux
+    /// and Windows; see `App::follows_reachability`), so a playback
+    /// connection that cannot reach Spotify decides it, and the next one
+    /// that does.
+    infers_reachability: bool,
     /// Playlists and albums waiting to download, oldest first.
     download_queue: VecDeque<String>,
     /// The one download running, and the flag that stops it.
@@ -2000,6 +2008,7 @@ impl Worker {
             offline: None,
             offline_playback: None,
             last_load: None,
+            infers_reachability: !cfg!(target_os = "macos"),
             download_queue: VecDeque::new(),
             download_running: None,
             download_progress: None,
@@ -2572,9 +2581,17 @@ impl Worker {
                         }
                     } else if self.engine.is_some() {
                         self.waiting_for_network = false;
-                    } else if self.waiting_for_network && !self.engine_busy {
-                        self.waiting_for_network = false;
-                        self.resume_engine();
+                    } else {
+                        // Back online: try now, and start the backoff over,
+                        // rather than wait out a delay that grew while there
+                        // was no network to reach. An attempt still in flight
+                        // keeps waiting set, so its failure from the outage
+                        // tries again at once.
+                        self.cancel_engine_retry();
+                        if !self.engine_busy {
+                            self.waiting_for_network = false;
+                            self.resume_engine();
+                        }
                     }
                 }
                 Command::SignInEnded { source, attempt } => {
@@ -3096,6 +3113,14 @@ impl Worker {
             offline.player.set_modes(offline.shuffle, offline.repeat),
         )));
         self.offline_playback = Some(offline);
+    }
+
+    /// Tells the app whether Spotify can be reached, where nothing else does.
+    fn note_reachable(&mut self, reachable: bool) {
+        if self.network_reachable != reachable {
+            self.network_reachable = reachable;
+            self.emit(Event::NetworkStatus(reachable));
+        }
     }
 
     /// Moves the song a dropped session left playing onto the offline
@@ -3869,7 +3894,7 @@ impl Worker {
             .clone()
             .or_else(|| self.playback_grant.clone());
         if let Some(credentials) = credentials {
-            if !self.network_reachable {
+            if !self.network_reachable && !self.infers_reachability {
                 self.waiting_for_network = true;
                 self.emit(Event::Playback(LocalPlayback::WaitingForNetwork));
                 return;
@@ -3917,7 +3942,7 @@ impl Worker {
         if self.engine_busy {
             return;
         }
-        if !self.network_reachable {
+        if !self.network_reachable && !self.infers_reachability {
             self.take_engine_keeping_player();
             self.waiting_for_network = true;
             self.emit(Event::Playback(LocalPlayback::WaitingForNetwork));
@@ -3944,7 +3969,13 @@ impl Worker {
     /// Try the saved grant again after a backoff. Each failure in a row
     /// waits longer, up to the last of `ENGINE_RETRY_DELAYS`.
     fn schedule_engine_retry(&mut self) {
-        let delay = ENGINE_RETRY_DELAYS[self.engine_retries.min(ENGINE_RETRY_DELAYS.len() - 1)];
+        // Offline as far as anyone can tell: each try is cheap and the first
+        // to get through brings everything back, so keep trying often.
+        let delay = if self.infers_reachability && !self.network_reachable {
+            OFFLINE_RETRY_SECONDS
+        } else {
+            ENGINE_RETRY_DELAYS[self.engine_retries.min(ENGINE_RETRY_DELAYS.len() - 1)]
+        };
         self.engine_retries += 1;
         self.engine_retry_generation += 1;
         let generation = self.engine_retry_generation;
@@ -4324,6 +4355,9 @@ impl Worker {
                 }
                 engine.set_offline(self.offline.clone());
                 self.engine = Some(engine);
+                if self.infers_reachability {
+                    self.note_reachable(true);
+                }
                 self.check_in_downloads();
                 self.sync_downloads();
                 self.start_rootlist();
@@ -4336,7 +4370,15 @@ impl Worker {
                 self.start_prerelease();
             }
             None => {
-                if !self.network_reachable {
+                if self.infers_reachability && is_unreachable_error(error.as_deref()) {
+                    // Nothing reached Spotify: offline, as macOS would have
+                    // said. Downloads play, and playback keeps trying.
+                    self.note_reachable(false);
+                    self.waiting_for_network = true;
+                    self.emit(Event::Playback(LocalPlayback::WaitingForNetwork));
+                    self.schedule_engine_retry();
+                    self.continue_offline();
+                } else if !self.network_reachable && !self.infers_reachability {
                     self.waiting_for_network = true;
                     self.emit(Event::Playback(LocalPlayback::WaitingForNetwork));
                 } else if self.waiting_for_network
@@ -5250,6 +5292,27 @@ fn is_rejected_grant(error: Option<&str>) -> bool {
         lower.contains("badcredentials")
             || lower.contains("bad credentials")
             || lower.contains("rejected the saved sign-in")
+    })
+}
+
+/// Whether a playback connection failed because nothing reached Spotify,
+/// rather than because Spotify answered no.
+// ponytail: matches librespot's and hyper's wording; a typed error would
+// survive their changes better.
+fn is_unreachable_error(error: Option<&str>) -> bool {
+    error.is_some_and(|message| {
+        let lower = message.to_lowercase();
+        !is_terminal_credential_error(Some(message))
+            && [
+                "dns error",
+                "failed to lookup address",
+                "client error (connect)",
+                "network is unreachable",
+                "connection refused",
+                "no route to host",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
     })
 }
 
@@ -9432,6 +9495,66 @@ mod authorization_tests {
                 .try_iter()
                 .any(|event| matches!(event, Event::Error(message) if message.contains("Premium")))
         );
+    }
+
+    #[test]
+    fn the_network_returning_starts_the_engine_backoff_over() {
+        let (runtime, mut worker, _events) = worker("network-back-backoff");
+        worker.engine_retries = 3;
+        let pending = worker.engine_retry_generation;
+        worker.network_reachable = false;
+        let (commands, receiver) = mpsc::unbounded_channel();
+        commands.send(Command::NetworkStatus(true)).unwrap();
+        commands.send(Command::Shutdown).unwrap();
+        runtime.block_on(worker.run(receiver));
+        assert_eq!(worker.engine_retries, 0);
+        assert_ne!(
+            worker.engine_retry_generation, pending,
+            "a retry scheduled offline no longer waits its turn"
+        );
+    }
+
+    #[test]
+    fn where_the_system_says_nothing_a_failed_connection_means_offline() {
+        let (runtime, mut worker, events) = worker("inferred-offline");
+        let _entered = runtime.enter();
+        verify(&mut worker, ApiSource::Shared, "alice");
+        worker.infers_reachability = true;
+        let attempt = worker.engine_attempt;
+        let generation = worker.album_type_lookup.session_generation;
+        let _ = events.try_iter().count();
+        worker.on_engine_connected(
+            generation,
+            None,
+            Some("unable to connect to Spotify: Service unavailable { client error (Connect) }: dns error: failed to lookup address information".into()),
+            attempt,
+        );
+        assert!(!worker.network_reachable);
+        let emitted: Vec<_> = events.try_iter().collect();
+        assert!(
+            emitted
+                .iter()
+                .any(|event| matches!(event, Event::NetworkStatus(false)))
+        );
+        assert!(
+            emitted
+                .iter()
+                .any(|event| matches!(event, Event::Playback(LocalPlayback::WaitingForNetwork)))
+        );
+        // Reconnection is still tried, often.
+        assert!(worker.engine_retry_generation > 0);
+    }
+
+    #[test]
+    fn only_an_unreachable_spotify_counts_as_offline() {
+        assert!(is_unreachable_error(Some(
+            "unable to connect to Spotify: dns error: failed to lookup address information"
+        )));
+        assert!(!is_unreachable_error(Some(
+            "Spotify rejected the saved sign-in"
+        )));
+        assert!(!is_unreachable_error(Some("Spotify answered 503")));
+        assert!(!is_unreachable_error(None));
     }
 
     #[test]
