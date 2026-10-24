@@ -5118,6 +5118,18 @@ impl App {
                         .or_default()
                         .generation = self.load_generation;
                 }
+                // Offline, the library list's copy names the playlist and
+                // its version, so its cached rows can show.
+                if !self.network_reachable
+                    && self
+                        .playlist_pages
+                        .get(&id)
+                        .is_none_or(|page| page.playlist.needs_load())
+                    && let Some(known) = self.known_playlist(&id).cloned()
+                {
+                    self.playlist_pages.entry(id.clone()).or_default().playlist =
+                        Loadable::Loaded(known);
+                }
                 let page = self.playlist_pages.entry(id.clone()).or_default();
                 let generation = page.generation;
                 if page.playlist.needs_load() && self.network_reachable {
@@ -8926,6 +8938,26 @@ impl App {
             shuffle: shuffle.then_some(true),
             at: Instant::now(),
         });
+        // Offline, a list not downloaded as a whole plays its downloaded
+        // songs, in its order, from the one chosen.
+        if !self.network_reachable
+            && let Some(context) = request.context_uri.clone()
+            && !self.downloads.contexts.contains(&context)
+            && let Some(songs) = self.context_track_uris(&context)
+        {
+            let chosen = request.offset_uri.clone().or_else(|| {
+                request
+                    .offset_position
+                    .and_then(|position| self.playlist_track_at(&context, position))
+            });
+            request.uris = songs
+                .into_iter()
+                .filter(|song| self.downloads.tracks.contains(song))
+                .collect();
+            request.context_uri = None;
+            request.offset_position = None;
+            request.offset_uri = chosen;
+        }
         // Offline, downloaded songs play here without waiting for Spotify.
         let target = if self.network_reachable {
             self.target()
@@ -30769,6 +30801,71 @@ mod tests {
         assert!(app.backend.take_playlist_item_requests().is_empty());
         assert_eq!(app.playlist_pages["cached_pl"].items.items.len(), 1);
         assert!(app.playlist_pages["cached_pl"].playlist.get().is_some());
+    }
+
+    #[test]
+    fn offline_a_playlist_is_named_from_the_library_so_its_cache_can_show() {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "listener".into(),
+        };
+        app.library.playlists = Loadable::Loaded(vec![Playlist {
+            id: "kept".into(),
+            name: "Road trip".into(),
+            snapshot_id: Some("snap".into()),
+            ..Default::default()
+        }]);
+        app.network_reachable = false;
+        app.ensure_loaded(Page::Playlist("kept".into()));
+        let header = app.playlist_pages["kept"].playlist.get().unwrap();
+        assert_eq!(header.snapshot_id.as_deref(), Some("snap"));
+        assert!(app.backend.take_playlist_item_requests().is_empty());
+    }
+
+    #[test]
+    fn offline_a_playlist_not_downloaded_plays_its_downloaded_songs() {
+        let mut app = headless_app();
+        let ctx = egui::Context::default();
+        app.playlist_pages.insert(
+            "mixed".into(),
+            PlaylistPage {
+                items: PagedList {
+                    items: vec![
+                        cached_playlist_row("spotify:track:a"),
+                        cached_playlist_row("spotify:track:streamed"),
+                        cached_playlist_row("spotify:track:b"),
+                    ],
+                    total: Some(3),
+                    loaded_once: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        app.network_reachable = false;
+        app.downloads.tracks.insert("spotify:track:a".into());
+        app.downloads.tracks.insert("spotify:track:b".into());
+        app.apply(
+            Action::PlayFromRow {
+                context: RowContext::Context {
+                    uri: "spotify:playlist:mixed".into(),
+                    editable_playlist: None,
+                },
+                uri: "spotify:track:b".into(),
+                index: 2,
+            },
+            &ctx,
+        );
+        let commands = app.backend.take_player_commands();
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                PlayerCommand::Load(load)
+                    if load.uris == ["spotify:track:a", "spotify:track:b"]
+                        && load.offset_uri.as_deref() == Some("spotify:track:b")
+            )),
+            "{commands:?}"
+        );
     }
 
     #[test]

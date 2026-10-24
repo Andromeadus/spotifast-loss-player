@@ -753,15 +753,9 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
         );
         return;
     }
-    // A Downloads page plays offline; every other table waits.
-    if !app.network_reachable && !matches!(table.page, Page::Download(_)) {
-        ui.add_enabled_ui(false, |ui| {
-            ui.multiply_opacity(0.55);
-            table_contents(app, ui, table);
-        });
-    } else {
-        table_contents(app, ui, table);
-    }
+    // Offline each row says for itself whether it plays: a downloaded
+    // song does, the rest show dimmed (`App::row_playable`).
+    table_contents(app, ui, table);
 }
 
 fn table_contents(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {

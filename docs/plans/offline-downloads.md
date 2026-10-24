@@ -142,22 +142,29 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
   Elsewhere offline, only downloaded rows play.
 - Step 3d done: when the engine connects again, the offline song moves to
   Spotify Connect where it had got to.
-- Known gap: after Wi-Fi came back, Connect took about 75 s to take over
-  (2026-10-23); the song played on offline meanwhile.
+- Fixed 2026-10-23: Connect took about 75 s to take over after Wi-Fi came
+  back, waiting out a retry backoff that grew offline. The network
+  returning now starts the backoff over and connects at once.
 - Step 5 done: the sealed index records when the playback session last
   reached Spotify; offline, downloads stop playing 30 days after that and
   the pages say to go online. Without Premium they do not play and the
   pages say so. Signing out revokes the offline key and deletes the
   downloads folder; a new key also clears files an old one left.
   The check-in trusts the computer's clock.
-- Not done: normal playlist and album pages offline for content not
-  downloaded (cached rows), and offline playback on Linux and Windows,
-  which do not report reachability.
+- Offline pages: a playlist's page takes its name and version from the
+  cached library list, so its cached rows show; each row says for itself
+  whether it plays (downloaded ones do). A song played from a playlist not
+  downloaded as a whole plays with that playlist's other downloaded songs.
+  Album pages have no cache, so only downloaded albums open offline.
 - Known gap: an offline cold start took about 13 s to leave the
   Connecting card (2026-10-22, macOS). Not measured yet; likely the first
   `/me` attempt (token refresh) or the keychain reads.
-- Known gap: only macOS follows network reachability. Elsewhere
-  `network_reachable` stays true, so offline requests are still sent and
-  fail; anything retried every frame needs its own guard.
+- Linux and Windows (not tested on either; built and unit tested on
+  macOS): the system's word on the network is not used, so a playback
+  connection that cannot reach Spotify at all (a lookup or connect error)
+  marks Spotifast offline, retries every 15 s, and the first connection
+  that gets through marks it online again. Until playback has tried,
+  `network_reachable` stays true, so anything retried every frame still
+  needs its own guard.
 - `packaging/test-launchers.py` fails on macOS (GNU `install -D` and
   `sed -i`); it is a Linux packaging check.
