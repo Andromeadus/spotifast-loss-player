@@ -486,6 +486,39 @@ pub async fn open_or_create(
     Ok(Arc::new(Downloads(RwLock::new(store))))
 }
 
+/// Removes the copy librespot's streaming cache keeps of a downloaded song:
+/// the player plays it from the downloads, so a second copy only fills the
+/// disk. `file` is the song's file id, base16.
+pub fn drop_cached_copy(session: &Session, file: &str) -> bool {
+    let (Some(cache), Some(id)) = (session.cache(), file_id(file)) else {
+        return false;
+    };
+    cache.file_path(id).is_some_and(|path| path.exists()) && cache.remove_file(id).is_ok()
+}
+
+/// [`drop_cached_copy`] for every downloaded song; answers how many went.
+pub fn drop_cached_copies(session: &Session, store: &Store) -> usize {
+    let files: BTreeSet<&str> = store
+        .index
+        .tracks
+        .values()
+        .map(|track| track.file.as_str())
+        .collect();
+    files
+        .into_iter()
+        .filter(|file| drop_cached_copy(session, file))
+        .count()
+}
+
+/// A file id from its base16 form.
+fn file_id(file: &str) -> Option<FileId> {
+    let bytes = (0..file.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(file.get(at..at + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    Some(FileId::from_raw(&bytes))
+}
+
 /// Now, in Unix seconds.
 pub fn now() -> i64 {
     std::time::SystemTime::now()
@@ -853,6 +886,30 @@ mod tests {
         assert!(open_or_create(&credentials, &dirs).await.is_err());
         assert!(dir(&dirs).join(INDEX_FILE).exists(), "the downloads stay");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_downloaded_songs_cached_copy_goes() {
+        let dir = temp_dir("offline-cached-copy");
+        let cache =
+            librespot_core::cache::Cache::new(None, None, Some(dir.join("audio")), None).unwrap();
+        let session = Session::new(Default::default(), Some(cache.clone()));
+        let file = "c903cba83d48222b7935fae84150948f666435f4";
+        let cached = cache.file_path(file_id(file).unwrap()).unwrap();
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        std::fs::write(&cached, b"encrypted").unwrap();
+        let mut store = Store::open(dir.join("offline"), &Store::new_key().unwrap()).unwrap();
+        store.add(kept("spotify:track:a", b"encrypted")).unwrap();
+        store.index.tracks.get_mut("spotify:track:a").unwrap().file = file.into();
+
+        assert_eq!(drop_cached_copies(&session, &store), 1);
+        assert!(!cached.exists());
+        assert_eq!(
+            drop_cached_copies(&session, &store),
+            0,
+            "nothing left to drop"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

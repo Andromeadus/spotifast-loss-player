@@ -24,16 +24,18 @@ only playable inside Spotifast.
 ## Running the dev build
 
 Needs `cmake` (Homebrew) for projectM. Portable mode is Windows-only, so
-on macOS the dev build gets its own home under `target/dev-home`, which
+on macOS the dev build gets its own home in `../spotifast-dev-home`, beside
+the checkout and out of `target/`, so cleaning the build never deletes its
+downloads or sign-in, which
 keeps it apart from an installed Spotifast (data and single-instance lock).
 Link the real keychain in once so sign-ins are remembered:
 
 ```bash
-mkdir -p target/dev-home/Library target/dev-home/tmp && ln -sfn ~/Library/Keychains target/dev-home/Library/Keychains
+mkdir -p ../spotifast-dev-home/Library ../spotifast-dev-home/tmp && ln -sfn ~/Library/Keychains ../spotifast-dev-home/Library/Keychains
 ```
 
 ```bash
-HOME=$PWD/target/dev-home TMPDIR=$PWD/target/dev-home/tmp/ ./target/debug/spotifast --verbose
+HOME=$PWD/../spotifast-dev-home TMPDIR=$PWD/../spotifast-dev-home/tmp/ ./target/debug/spotifast --verbose
 ```
 
 Sign the build with a stable identity before launching it, or macOS asks
@@ -107,7 +109,7 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
   copy (macOS asks once to let the probe use the keychain items):
 
   ```bash
-  HOME=$PWD/target/dev-home TMPDIR=$PWD/target/dev-home/tmp/ cargo run --example offline_probe -- spotify:track:4uLU6hMCjMI75M1A2tKUQC
+  HOME=$PWD/../spotifast-dev-home TMPDIR=$PWD/../spotifast-dev-home/tmp/ cargo run --example offline_probe -- spotify:track:4uLU6hMCjMI75M1A2tKUQC
   ```
 
 - Step 2 done: librespot `offline` branch adds `OfflineTracks` and

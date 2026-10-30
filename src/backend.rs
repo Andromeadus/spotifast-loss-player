@@ -3322,10 +3322,21 @@ impl Worker {
     /// The playback session reached Spotify: the downloads' offline time
     /// starts again.
     fn check_in_downloads(&self) {
-        let (Some(_), Some(downloads)) = (&self.engine, self.offline.clone()) else {
+        let (Some(engine), Some(downloads)) = (&self.engine, self.offline.clone()) else {
             return;
         };
         let commands = self.commands.clone();
+        let session = engine.session().clone();
+        let sweeping = Arc::clone(&downloads);
+        // Copies the streaming cache kept of downloaded songs, from before
+        // downloads dropped them or from a race with the cache's own save.
+        tokio::task::spawn_blocking(move || {
+            let store = sweeping.0.read().unwrap_or_else(|p| p.into_inner());
+            let dropped = crate::offline::drop_cached_copies(&session, &store);
+            if dropped > 0 {
+                log::info!("removed {dropped} cached copies of downloaded songs");
+            }
+        });
         tokio::spawn(async move {
             let checked =
                 crate::offline::change(&downloads, |store| store.check_in(crate::offline::now()))
@@ -10522,6 +10533,7 @@ impl DownloadJob {
                         anyhow::anyhow!("unable to save the downloaded song: {error}")
                     })?;
                     let stopping = Arc::clone(stop);
+                    let session = self.session.clone();
                     crate::offline::change(&self.downloads, move |store| {
                         if stopping.load(std::sync::atomic::Ordering::SeqCst) {
                             if !store.holds_file(&track.file) {
@@ -10529,6 +10541,9 @@ impl DownloadJob {
                             }
                             return Ok(());
                         }
+                        // Fetching it filled the streaming cache with a
+                        // second copy the player never needs.
+                        crate::offline::drop_cached_copy(&session, &track.file);
                         store.list(uris, track)
                     })
                     .await?;
