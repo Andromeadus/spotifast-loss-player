@@ -646,6 +646,9 @@ pub struct App {
     played_row: Option<PlayedRow>,
     /// The playlists and albums kept on this computer and their songs.
     pub downloads: crate::backend::DownloadsState,
+    /// The queue on show is the offline player's, until Spotify Connect
+    /// takes playback back.
+    offline_queue: bool,
     /// The songs found in the local files folder, as the `spotify:local:`
     /// URIs a playlist lists them by; `None` until the folder is read.
     pub local_files: Option<(
@@ -1238,6 +1241,7 @@ impl App {
             played_row: None,
             local_files: None,
             downloads: Default::default(),
+            offline_queue: false,
             shuffle_wanted: session.shuffle_on,
             repeat_wanted: RepeatMode::from_api(&session.repeat),
             shuffle_set_at: None,
@@ -2489,6 +2493,7 @@ impl App {
                 }
                 Event::LocalFilesFolderChosen(None) => {}
                 Event::Downloads(downloads) => self.downloads = downloads,
+                Event::OfflineQueue(queue) => self.on_offline_queue(*queue),
                 Event::LocalFiles { folder, uris } => {
                     // A scan of a folder since replaced says nothing now.
                     if self.settings.local_files_folder().as_ref() == Some(&folder) {
@@ -2807,6 +2812,11 @@ impl App {
         match &status {
             LocalPlayback::Ready { device_id } => {
                 self.local_device_id = Some(device_id.clone());
+                // Spotify Connect took over from the offline player: the
+                // songs queued offline go to its queue.
+                if std::mem::take(&mut self.offline_queue) && !self.manual_queue.is_empty() {
+                    self.resync_local_queue();
+                }
                 let became_ready = !self.local_ready;
                 self.local_ready = true;
                 if became_ready
@@ -5832,8 +5842,36 @@ impl App {
         self.backend.api(ApiRequest::Devices);
     }
 
+    /// The offline player's queue, which is the truth for it: no staleness
+    /// to wait out, unlike an answer from Spotify. Songs queued here stay
+    /// in `manual_queue`, which splits Playing next from Next up.
+    fn on_offline_queue(&mut self, queue: Queue) {
+        if self.network_reachable && !self.queue_locally_reorderable() {
+            return;
+        }
+        self.offline_queue = true;
+        // An answer from Spotify still on its way describes another player.
+        self.queue_seq = self.queue_seq.wrapping_add(1);
+        self.queue_stale_retries = 0;
+        self.queue_recheck_at = None;
+        self.queue_cleared = None;
+        self.queue_shuffle_pending = None;
+        self.queue_reorder_pending = None;
+        self.queue_removed = None;
+        let uris: Vec<String> = queue
+            .queue
+            .iter()
+            .map(|item| item.uri().to_string())
+            .collect();
+        self.queue = Loadable::Loaded(queue);
+        self.reconcile_pending_queue();
+        self.request_contains(uris);
+    }
+
     fn refresh_queue(&mut self, force: bool) {
-        if !self.is_connected() || !self.network_reachable {
+        // While downloads play offline the backend sends the queue itself;
+        // Spotify's would describe another player.
+        if !self.is_connected() || !self.network_reachable || self.offline_queue {
             return;
         }
         if self.resume_only() && matches!(self.queue, Loadable::Loaded(_)) {
@@ -10149,6 +10187,12 @@ impl App {
     /// active player, which plays it from the local files folder, and only
     /// when the folder holds it (#1002).
     pub fn can_queue(&self, uri: &str) -> bool {
+        // Offline, only a downloaded song can join the offline player's queue.
+        if !self.network_reachable && !uri.starts_with(LOCAL_URI_PREFIX) {
+            return self.queue_locally_reorderable()
+                && self.downloads.blocked.is_none()
+                && self.downloads.tracks.contains(uri);
+        }
         !uri.starts_with(LOCAL_URI_PREFIX)
             || (self.queue_locally_reorderable()
                 && self
@@ -24524,6 +24568,39 @@ mod tests {
             crate::ui::offline_download(&app, &Page::LikedSongs).as_deref(),
             Some("spotify:user:alice:collection")
         );
+    }
+
+    #[test]
+    fn offline_the_queue_is_the_offline_players() {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "listener".into(),
+        };
+        app.network_reachable = false;
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:now".into(),
+            ..Default::default()
+        });
+        app.local.playback = crate::player::Playback::Playing;
+        app.downloads.tracks.insert("spotify:track:kept".into());
+        let song = |uri: &str| {
+            PlayableItem::Track(Track {
+                uri: uri.into(),
+                ..Default::default()
+            })
+        };
+        app.on_offline_queue(Queue {
+            currently_playing: Some(song("spotify:track:now")),
+            queue: vec![song("spotify:track:next")],
+        });
+        assert_eq!(app.queue.get().unwrap().queue.len(), 1);
+        // Spotify is not asked for a queue that describes another player.
+        let asked = app.queue_seq;
+        app.refresh_queue(true);
+        assert_eq!(app.queue_seq, asked);
+        // Only downloaded songs can be queued offline.
+        assert!(app.can_queue("spotify:track:kept"));
+        assert!(!app.can_queue("spotify:track:streamed"));
     }
 
     #[test]

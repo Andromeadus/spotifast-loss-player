@@ -1634,12 +1634,14 @@ pub async fn song_uris(session: &Session, context: &str) -> Result<Vec<String>, 
     }
     if context.starts_with("spotify:album:") {
         let lists = album_song_uris(session, &[context]).await?;
-        return Ok(lists
-            .get(context)
-            .into_iter()
-            .flatten()
-            .map(SpotifyUri::to_uri)
-            .collect());
+        // An album missing from the answer is not an empty album: reading
+        // it as one would delete its download.
+        let songs = lists.get(context).ok_or_else(|| {
+            Failure::Retry(anyhow::anyhow!(
+                "Spotify did not list the songs of {context}"
+            ))
+        })?;
+        return Ok(songs.iter().map(SpotifyUri::to_uri).collect());
     }
     let id = context.strip_prefix("spotify:playlist:").ok_or_else(|| {
         Failure::Definitive(ApiError::Status {

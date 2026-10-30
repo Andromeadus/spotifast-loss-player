@@ -744,6 +744,15 @@ impl Store {
         marker.and(legacy)
     }
 
+    /// Whether a grant was saved in `slot` and not revoked since, whether or
+    /// not the credential store still has it.
+    pub fn saved(&self, slot: Slot) -> bool {
+        self.marker(slot)
+            .ok()
+            .flatten()
+            .is_some_and(|marker| !marker.revoked)
+    }
+
     pub fn revoke_spotify(&self) -> Result<(), Error> {
         let mut error = None;
         for slot in Slot::SPOTIFY {

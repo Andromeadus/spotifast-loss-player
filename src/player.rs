@@ -312,7 +312,9 @@ pub enum EngineEvent {
     SessionEnded,
     /// The song played to its end. Spotify Connect moves on by itself; the
     /// offline player, which has no Connect, is moved on by the backend.
-    TrackEnded,
+    /// Names the song, so a song that ended as another was chosen moves
+    /// nothing on.
+    TrackEnded(String),
     /// The output opened on the device an older build saved by `name`;
     /// the setting holds its `id` from now on.
     AudioDevice {
@@ -1004,7 +1006,10 @@ async fn run_events(
             continue;
         }
         audio.handle_player_event(&event);
-        let ended = matches!(event, PlayerEvent::EndOfTrack { .. });
+        let ended = match &event {
+            PlayerEvent::EndOfTrack { track_id, .. } => Some(track_id.to_uri()),
+            _ => None,
+        };
         let snapshot = {
             let mut current = state.lock().unwrap_or_else(|p| p.into_inner());
             if apply_event(&mut current, event) {
@@ -1016,8 +1021,8 @@ async fn run_events(
         if let Some(snapshot) = snapshot {
             notify(EngineEvent::State(snapshot));
         }
-        if ended {
-            notify(EngineEvent::TrackEnded);
+        if let Some(song) = ended {
+            notify(EngineEvent::TrackEnded(song));
         }
     }
 }

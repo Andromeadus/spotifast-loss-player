@@ -2722,13 +2722,8 @@ fn download_name(locale: Locale, list: &crate::offline::KeptList) -> String {
 pub fn download(app: &mut App, ui: &mut egui::Ui, uri: &str) {
     let palette = app.palette;
     let locale = app.locale;
-    let Some(list) = app
-        .downloads
-        .lists
-        .iter()
-        .find(|list| list.uri == uri)
-        .cloned()
-    else {
+    let lists = Arc::clone(&app.downloads.lists);
+    let Some(list) = lists.iter().find(|list| list.uri == uri) else {
         widgets::empty_state(
             ui,
             &palette,
@@ -2744,21 +2739,21 @@ pub fn download(app: &mut App, ui: &mut egui::Ui, uri: &str) {
     if downloads_blocked(app, ui) {
         return;
     }
-    let name = download_name(locale, &list);
+    let name = download_name(locale, list);
     let album = uri.starts_with("spotify:album:");
-    let items: Vec<TableItem> = list
-        .songs
-        .iter()
-        .map(|song| (PlayableItem::Track(song.clone()), None, None))
-        .collect();
+    let page = Page::Download(uri.to_string());
+    let revision = list.revision;
+    // Kept between frames: a long Liked Songs would otherwise be built
+    // again on every one.
+    let items = table_items_hit(app, &page, revision, revision, 0).unwrap_or_else(|| {
+        let rows = list
+            .songs
+            .iter()
+            .map(|song| (PlayableItem::Track(song.clone()), None, None))
+            .collect();
+        remember_table_items(app, page.clone(), revision, revision, 0, rows)
+    });
     let uris: Arc<[String]> = list.songs.iter().map(|song| song.uri.clone()).collect();
-    // Changes whenever the songs do, so the table's sorted rows follow.
-    let revision = {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        uris.hash(&mut hasher);
-        hasher.finish()
-    };
     hero(
         app,
         ui,

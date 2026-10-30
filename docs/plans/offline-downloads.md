@@ -156,9 +156,11 @@ Steps 1 and 2 are testable without going offline. Step 3 is the large one.
   whether it plays (downloaded ones do). A song played from a playlist not
   downloaded as a whole plays with that playlist's other downloaded songs.
   Album pages have no cache, so only downloaded albums open offline.
-- Known gap: an offline cold start took about 13 s to leave the
-  Connecting card (2026-10-22, macOS). Not measured yet; likely the first
-  `/me` attempt (token refresh) or the keychain reads.
+- An offline cold start took about 13 s to leave the Connecting card
+  (2026-10-22, macOS). When macOS already reports no network as the
+  account check starts, the remembered profile is now used at once, with
+  no request to wait on (untested offline; if reachability arrives later,
+  the first failed request still decides).
 - Linux and Windows (not tested on either; built and unit tested on
   macOS): the system's word on the network is not used, so a playback
   connection that cannot reach Spotify at all (a lookup or connect error)

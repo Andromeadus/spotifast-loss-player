@@ -188,7 +188,8 @@ librespot provides:
   branch (Andromeadus/librespot). With no network, on macOS, downloaded
   songs play on a player of their own: a kept playlist or album opens as
   its downloaded songs, and play, pause, skip, seek, shuffle and repeat
-  work, but the queue cannot be changed. When the network returns, Spotify
+  work, and songs downloaded can be queued, played next, moved and
+  removed. When the network returns, Spotify
   Connect carries the song on. As in Spotify's own client, downloads play
   offline for 30 days after Spotifast was last online, need Premium, and
   are deleted, with their key, on sign-out. See

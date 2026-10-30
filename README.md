@@ -31,6 +31,10 @@ The interface includes complete
 **Playback needs Spotify Premium.** Free accounts can browse and search, but
 cannot play music through Spotifast.
 
+**This fork adds offline listening.** Download playlists, albums and Liked
+Songs, then play them with no internet connection. See
+[Listen offline](#listen-offline).
+
 ![Spotifast Home with the playlist library, recommendations, queue, and player visible](docs/screenshot.png)
 
 <details>
@@ -50,6 +54,7 @@ https://github.com/user-attachments/assets/a5f669ce-b3b7-4f8e-9933-976a78876c7e
 | **Local files** | Play the local files your playlists list from a folder you choose in Settings, at any sample rate. |
 | **Spotify Connect** | Play on this computer or control playback on your other devices, including Google Cast speakers and groups. Cast devices appear as they are discovered; frequently and recently chosen outputs rise to the top. |
 | **Queue** | Add songs to the queue, or choose **Play next** to put a song or selection first when playing on this computer. |
+| **Downloads and offline** | Keep playlists, albums and Liked Songs on this computer and play them with no internet connection. |
 | **Themes** | Choose light, dark, system appearance, or custom colours, with one theme for light mode and one for dark mode that switch with the system. On Omarchy, follow your desktop theme. |
 | **Desktop controls** | Use keyboard shortcuts and media keys. Keep music playing from the tray when supported by your desktop and settings, and start Spotifast with your computer, with its window or in the tray. |
 | **Winamp mini player** | Use classic skins with an equalizer, playlist, and animated sound displays. |
@@ -78,6 +83,36 @@ Library access and local playback have separate approvals. Spotifast remembers
 both using your computer's protected storage. See
 [Getting started](https://spotifast.rocks/getting-started/) for the full walkthrough
 and [How it connects](https://spotifast.rocks/how-it-connects/) for the details.
+
+## Listen offline
+
+Press the download button next to the heart on a playlist or album, or next
+to **Play** on Liked Songs. A ring around the button fills as songs arrive,
+and each downloaded song gets a green arrow. Downloads stay in sync: new
+songs added to a downloaded playlist are fetched the next time Spotifast is
+online, and songs removed from it are deleted.
+
+With no connection, open a downloaded playlist or album the usual way, or
+from **Downloads** in the sidebar. Downloaded songs play, with pause, skip,
+seek, shuffle, repeat and the queue; everything else shows dimmed. A song
+that is playing when the connection drops carries on, and Spotify Connect
+picks it up again when the connection returns.
+
+Downloads follow the same rules as Spotify's own app:
+
+- **Encrypted.** Songs are stored exactly as Spotify sends them, in
+  320 kbps Ogg Vorbis, and only Spotifast can play them. Their keys are
+  kept in your computer's protected storage.
+- **Online every 30 days.** Downloads stop playing offline if Spotifast has
+  not been online for 30 days, until it reconnects.
+- **Premium only**, and **signing out deletes them**.
+
+Lossless downloads are not available: Spotify protects its lossless audio
+with DRM that librespot cannot use.
+
+On macOS, Spotifast knows straight away when the network goes. On Linux and
+Windows it goes offline when playback cannot reach Spotify at all, and
+checks again every 15 seconds.
 
 ## The Winamp mini player
 

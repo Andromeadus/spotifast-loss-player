@@ -789,8 +789,9 @@ pub enum Command {
     NetworkStatus(bool),
     /// Internal: librespot's session ended on its own.
     Reconnect,
-    /// Internal: the offline player's song played to its end.
-    OfflineTrackEnded,
+    /// Internal: a song played to its end on a player; the offline player
+    /// moves on when it is the song it plays.
+    OfflineTrackEnded(String),
     /// Internal: the backoff after a failed engine connection has passed.
     RetryEngine {
         generation: u64,
@@ -919,13 +920,19 @@ pub enum Command {
         on: bool,
         name: Option<crate::offline::Name>,
     },
-    /// Internal: the running download reached another song.
-    DownloadProgress(DownloadProgress),
-    /// Internal: the running download stopped, finished or not.
+    /// Internal: download job `job` reached another song.
+    DownloadProgress {
+        job: u64,
+        progress: DownloadProgress,
+    },
+    /// Internal: download job `job` stopped, finished or not.
     DownloadFinished {
+        job: u64,
         context: String,
         error: Option<String>,
     },
+    /// Internal: the download store could not be opened or made.
+    DownloadsUnavailable(String),
     /// Internal: a playlist or album stopped being kept, or started.
     DownloadsChanged,
     /// Internal: the account's offline downloads were opened.
@@ -1006,6 +1013,9 @@ pub struct DownloadProgress {
 
 pub enum Event {
     Downloads(DownloadsState),
+    /// The queue while downloads play offline: the backend keeps it, as
+    /// Spotify does when it can be reached.
+    OfflineQueue(Box<Queue>),
     /// The folder picked in the local files dialog; `None` when cancelled.
     LocalFilesFolderChosen(Option<std::path::PathBuf>),
     /// The songs in `folder`, by the `spotify:local:` URIs they play for.
@@ -1878,7 +1888,12 @@ struct Worker {
     /// Playlists and albums waiting to download, oldest first.
     download_queue: VecDeque<String>,
     /// The one download running, and the flag that stops it.
-    download_running: Option<(String, Arc<std::sync::atomic::AtomicBool>)>,
+    download_running: Option<(u64, String, Arc<std::sync::atomic::AtomicBool>)>,
+    /// Numbers each download job, so a stopped one's late word is ignored.
+    download_jobs: u64,
+    /// The download store is being opened or made; one opener at a time,
+    /// so two copies of the index can never write over each other.
+    offline_opening: bool,
     download_progress: Option<DownloadProgress>,
     /// Turned off and still being removed from the store.
     download_removing: BTreeSet<String>,
@@ -2011,6 +2026,8 @@ impl Worker {
             infers_reachability: !cfg!(target_os = "macos"),
             download_queue: VecDeque::new(),
             download_running: None,
+            download_jobs: 0,
+            offline_opening: false,
             download_progress: None,
             download_removing: BTreeSet::new(),
             download_names: Default::default(),
@@ -2875,37 +2892,62 @@ impl Worker {
                     session_generation,
                     downloads,
                 } => {
-                    if session_generation == *self.session.borrow() {
+                    self.offline_opening = false;
+                    // Only the first store opened is used: a second copy of
+                    // the index would write over the first's changes.
+                    if session_generation == *self.session.borrow()
+                        && self.offline.is_none()
+                        && downloads.is_some()
+                    {
                         if let Some(engine) = &self.engine {
                             engine.set_offline(downloads.clone());
                         }
-                        let opened = self.offline.is_none();
                         self.offline = downloads;
-                        if opened {
-                            self.check_in_downloads();
-                            self.sync_downloads();
-                        }
-                        self.emit_downloads();
+                        self.check_in_downloads();
+                        self.sync_downloads();
                     }
+                    self.emit_downloads();
+                    // A download waiting for the store starts now, or makes it.
+                    self.start_download();
                 }
-                Command::OfflineTrackEnded => self.offline_track_ended(),
+                Command::DownloadsUnavailable(error) => {
+                    self.offline_opening = false;
+                    log::warn!("unable to open the downloads: {error}");
+                    self.emit(Event::Error(format!("Downloads can't be saved: {error}")));
+                    self.download_queue.clear();
+                    self.emit_downloads();
+                }
+                Command::OfflineTrackEnded(song) => self.offline_track_ended(&song),
                 Command::SetDownload { context, on, name } => {
                     if let Some(name) = name {
                         self.download_names.insert(context.clone(), name);
                     }
                     self.set_download(context, on);
                 }
-                Command::DownloadProgress(progress) => {
+                Command::DownloadProgress { job, progress } => {
                     if self
                         .download_running
                         .as_ref()
-                        .is_some_and(|(running, _)| *running == progress.context)
+                        .is_some_and(|(running, ..)| *running == job)
                     {
                         self.download_progress = Some(progress);
                         self.emit_downloads();
                     }
                 }
-                Command::DownloadFinished { context, error } => {
+                Command::DownloadFinished {
+                    job,
+                    context,
+                    error,
+                } => {
+                    // A job stopped by sign-out may answer after the next
+                    // one started: its word is not about that one.
+                    if self
+                        .download_running
+                        .as_ref()
+                        .is_none_or(|(running, ..)| *running != job)
+                    {
+                        continue;
+                    }
                     if let Some(error) = error {
                         log::warn!("download of {context} stopped: {error}");
                         self.emit(Event::Error(format!("Download stopped: {error}")));
@@ -3026,6 +3068,13 @@ impl Worker {
             return false;
         };
         let mut modes = None;
+        let reorders = !matches!(
+            command,
+            PlayerCommand::Toggle
+                | PlayerCommand::Seek(_)
+                | PlayerCommand::Volume(_)
+                | PlayerCommand::VolumePreview(_)
+        );
         let result = match command {
             PlayerCommand::Toggle => {
                 offline.player.toggle();
@@ -3042,18 +3091,46 @@ impl Worker {
                 Ok(())
             }
             PlayerCommand::Shuffle(on) => {
-                offline.set_shuffle(*on);
-                modes = Some(offline.player.set_modes(offline.shuffle, offline.repeat));
+                offline.order.set_shuffle(*on);
+                modes = Some(
+                    offline
+                        .player
+                        .set_modes(offline.order.shuffle, offline.order.repeat),
+                );
                 Ok(())
             }
             PlayerCommand::Repeat(mode) => {
-                offline.repeat = *mode;
-                modes = Some(offline.player.set_modes(offline.shuffle, offline.repeat));
+                offline.order.repeat = *mode;
+                modes = Some(
+                    offline
+                        .player
+                        .set_modes(offline.order.shuffle, offline.order.repeat),
+                );
                 Ok(())
             }
-            PlayerCommand::AddToQueue(_) | PlayerCommand::ClearQueue | PlayerCommand::Transfer => {
-                Err(anyhow::anyhow!("The queue can't be changed while offline"))
+            PlayerCommand::AddToQueue(song) => {
+                let kept = downloads
+                    .0
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(song)
+                    .is_some();
+                if kept {
+                    offline.order.queued.push_back(song.clone());
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Only downloaded songs can be queued while offline"
+                    ))
+                }
             }
+            PlayerCommand::ClearQueue => {
+                offline.order.queued.clear();
+                Ok(())
+            }
+            PlayerCommand::Transfer => Err(anyhow::anyhow!(
+                "Playback can't move to this computer while offline"
+            )),
             PlayerCommand::Load(_) => unreachable!("handled above"),
         };
         if let Some(state) = modes {
@@ -3062,57 +3139,96 @@ impl Worker {
         if let Err(error) = result {
             self.emit(Event::Error(error.to_string()));
         }
+        if reorders {
+            self.emit_offline_queue();
+        }
         true
+    }
+
+    /// What the queue shows while downloads play offline, sent after every
+    /// change: the song playing, then what follows it.
+    fn emit_offline_queue(&self) {
+        let (Some(offline), Some(downloads)) = (&self.offline_playback, &self.offline) else {
+            return;
+        };
+        let store = downloads.0.read().unwrap_or_else(|p| p.into_inner());
+        let item = |song: &String| {
+            store
+                .get(song)
+                .map(|track| PlayableItem::Track(track.api_track(song)))
+        };
+        self.emit(Event::OfflineQueue(Box::new(Queue {
+            currently_playing: item(&offline.order.current),
+            queue: offline.order.upcoming().iter().filter_map(item).collect(),
+        })));
     }
 
     /// Starts the downloaded songs a load names: its own list, or a kept
     /// playlist's or album's, at the song it chose.
     fn load_offline(&mut self, spec: &LoadSpec, downloads: &Arc<crate::offline::Downloads>) {
         if let Some(blocked) = self.downloads_blocked() {
+            // Something else was chosen: the old song stops either way.
+            self.stop_kept_player();
             self.emit(Event::Error(blocked.message().into()));
             return;
         }
         let (listed, start) =
             offline_queue(spec, &downloads.0.read().unwrap_or_else(|p| p.into_inner()));
         if listed.is_empty() {
+            self.stop_kept_player();
             self.emit(Event::Error(
                 "Only downloaded songs play while offline".into(),
             ));
             return;
         }
-        let (shuffle, repeat, player) = match self.offline_playback.take() {
-            Some(offline) => (offline.shuffle, offline.repeat, offline.player),
+        // Songs queued by hand stay queued when another list starts.
+        let (shuffle, repeat, queued, player) = match self.offline_playback.take() {
+            Some(offline) => (
+                offline.order.shuffle,
+                offline.order.repeat,
+                offline.order.queued,
+                offline.player,
+            ),
             None => match Engine::offline_player(
                 &self.engine_config,
                 &self.engine_notify(),
                 Arc::clone(downloads),
             ) {
-                Ok(player) => (false, RepeatMode::Off, player),
+                Ok(player) => (false, RepeatMode::Off, VecDeque::new(), player),
                 Err(error) => {
                     self.emit(Event::Error(format!("Offline playback failed: {error:#}")));
                     return;
                 }
             },
         };
-        // A song a dropped session left playing gives way.
+        // A song a dropped session left playing gives way, and so does
+        // where it would have resumed: the offline song hands over instead.
         self.stop_kept_player();
-        let mut offline = OfflinePlayback {
+        self.resume = None;
+        let offline = OfflinePlayback {
             player,
             context: spec.context_uri.clone(),
-            order: listed.clone(),
-            listed,
-            index: start,
-            shuffle: false,
-            repeat: spec.repeat.unwrap_or(repeat),
+            order: PlayOrder::new(
+                listed,
+                start,
+                spec.shuffle.unwrap_or(shuffle),
+                spec.repeat.unwrap_or(repeat),
+                queued,
+            ),
         };
-        offline.set_shuffle(spec.shuffle.unwrap_or(shuffle));
-        if let Err(error) = offline.play(offline.index, spec.position_ms, spec.play) {
+        if let Err(error) = offline
+            .player
+            .load(&offline.order.current, spec.position_ms, spec.play)
+        {
             self.emit(Event::Error(format!("Offline playback failed: {error:#}")));
         }
         self.emit(Event::Local(Box::new(
-            offline.player.set_modes(offline.shuffle, offline.repeat),
+            offline
+                .player
+                .set_modes(offline.order.shuffle, offline.order.repeat),
         )));
         self.offline_playback = Some(offline);
+        self.emit_offline_queue();
     }
 
     /// Tells the app whether Spotify can be reached, where nothing else does.
@@ -3142,18 +3258,23 @@ impl Worker {
         }
     }
 
-    fn offline_track_ended(&mut self) {
-        let Some(offline) = self.offline_playback.as_mut() else {
+    fn offline_track_ended(&mut self, song: &str) {
+        let Some(offline) = self
+            .offline_playback
+            .as_mut()
+            .filter(|offline| offline.order.current == song)
+        else {
             return;
         };
-        let result = if offline.repeat == RepeatMode::Track {
-            offline.play(offline.index, 0, true)
+        let result = if offline.order.repeat == RepeatMode::Track {
+            offline.replay()
         } else {
             offline.next()
         };
         if let Err(error) = result {
             self.emit(Event::Error(format!("Offline playback failed: {error:#}")));
         }
+        self.emit_offline_queue();
     }
 
     /// What the app shows of the downloads, sent after every change.
@@ -3174,7 +3295,7 @@ impl Worker {
         contexts.extend(
             self.download_running
                 .iter()
-                .map(|(context, _)| context.clone()),
+                .map(|(_, context, _)| context.clone()),
         );
         contexts.retain(|context| !self.download_removing.contains(context));
         self.emit(Event::Downloads(DownloadsState {
@@ -3220,21 +3341,26 @@ impl Worker {
         if on {
             if self.premium == Some(false) {
                 self.emit(Event::Error("Downloads need Spotify Premium.".into()));
-            } else if !self.download_queue.contains(&context)
-                && self
+            } else if !self.download_queue.contains(&context) {
+                // Running and not told to stop, it is already on its way;
+                // told to stop, it goes again once that job winds down.
+                let running = self
                     .download_running
                     .as_ref()
-                    .is_none_or(|(running, _)| *running != context)
-            {
-                self.download_removing.remove(&context);
-                self.download_queue.push_back(context);
-                self.start_download();
+                    .is_some_and(|(_, running, stop)| {
+                        *running == context && !stop.load(std::sync::atomic::Ordering::SeqCst)
+                    });
+                if !running {
+                    self.download_removing.remove(&context);
+                    self.download_queue.push_back(context);
+                    self.start_download();
+                }
             }
             self.emit_downloads();
             return;
         }
         self.download_queue.retain(|queued| *queued != context);
-        if let Some((running, stop)) = &self.download_running
+        if let Some((_, running, stop)) = &self.download_running
             && *running == context
         {
             stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -3290,30 +3416,61 @@ impl Worker {
         else {
             return;
         };
+        if self.download_queue.is_empty() {
+            return;
+        }
+        let Some(downloads) = self.offline.clone() else {
+            self.open_downloads();
+            return;
+        };
         let Some(context) = self.download_queue.pop_front() else {
             return;
         };
+        self.download_jobs += 1;
+        let id = self.download_jobs;
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.download_running = Some((context.clone(), Arc::clone(&stop)));
+        self.download_running = Some((id, context.clone(), Arc::clone(&stop)));
         let job = DownloadJob {
+            id,
             session,
-            credentials: self.credentials.clone(),
-            dirs: self.dirs.clone(),
-            downloads: self.offline.clone(),
+            downloads,
             name: self.download_names.remove(&context),
-            session_generation: *self.session.borrow(),
             commands: self.commands.clone(),
         };
         tokio::spawn(async move {
             let error = job.run(&context, &stop).await.err();
             let _ = job.commands.send(Command::DownloadFinished {
+                job: id,
                 context,
                 error: error.map(|error| format!("{error:#}")),
             });
         });
     }
 
-    fn restore_offline(&self) {
+    /// Opens the download store, making its key the first time, unless it
+    /// is already being opened.
+    fn open_downloads(&mut self) {
+        if std::mem::replace(&mut self.offline_opening, true) {
+            return;
+        }
+        let credentials = self.credentials.clone();
+        let dirs = self.dirs.clone();
+        let session_generation = *self.session.borrow();
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            let opened = crate::offline::open_or_create(&credentials, &dirs).await;
+            let _ = commands.send(match opened {
+                Ok(downloads) => Command::OfflineRestored {
+                    session_generation,
+                    downloads: Some(downloads),
+                },
+                Err(error) => Command::DownloadsUnavailable(format!("{error:#}")),
+            });
+        });
+    }
+
+    fn restore_offline(&mut self) {
+        self.offline_opening = true;
         let credentials = self.credentials.clone();
         let dirs = self.dirs.clone();
         let session_generation = *self.session.borrow();
@@ -3322,6 +3479,7 @@ impl Worker {
         tokio::spawn(async move {
             let downloads = until_answered(
                 || crate::offline::restore(&credentials, &dirs),
+                credential_store_busy,
                 generation,
                 Duration::from_secs(5),
             )
@@ -3443,13 +3601,28 @@ impl Worker {
         let commands = self.commands.clone();
         let attempt = self.authorization_attempt;
         let profile = self.dirs.profile_cache_file();
+        // The system already says there is no network: asking Spotify would
+        // only wait for the request to fail.
+        let known_offline = !self.network_reachable && !self.infers_reachability;
         tokio::spawn(async move {
             let mut remembered = crate::account_cache::read_own::<User>(&profile)
                 .await
                 .filter(|cache| cache.account_id == cache.data.id)
                 .map(|cache| cache.data);
             let mut wait = Duration::from_secs(2);
+            let mut unreachable = known_offline;
             let error = loop {
+                if let Some(user) = offline_profile(unreachable, &mut remembered) {
+                    log::info!("Spotify is unreachable: starting with the remembered account");
+                    let _ = commands.send(Command::WebVerified {
+                        source,
+                        token: Box::new(token),
+                        user: Box::new(user),
+                        lease: lease.clone(),
+                        attempt,
+                    });
+                    return;
+                }
                 if !lease.current() {
                     let _ = commands.send(Command::SignInEnded { source, attempt });
                     return;
@@ -3467,20 +3640,11 @@ impl Worker {
                     }
                     Err(error @ ApiError::SignInExpired { .. }) => break error,
                     Err(error) if error.status().is_some_and(|status| status < 500) => break error,
+                    Err(error) if is_network_failure(&error) && remembered.is_some() => {
+                        unreachable = true;
+                        continue;
+                    }
                     Err(error) => {
-                        if let Some(user) = offline_profile(&error, &mut remembered) {
-                            log::info!(
-                                "Spotify is unreachable: starting with the remembered account"
-                            );
-                            let _ = commands.send(Command::WebVerified {
-                                source,
-                                token: Box::new(token),
-                                user: Box::new(user),
-                                lease: lease.clone(),
-                                attempt,
-                            });
-                            return;
-                        }
                         log::warn!("Spotify sign-in verification will retry: {error}");
                         tokio::time::sleep(wait).await;
                         wait = (wait * 2).min(Duration::from_secs(60));
@@ -3793,20 +3957,26 @@ impl Worker {
             self.emit(Event::Error(error.to_string()));
         }
         self.delete_stored_grant(CredentialSlot::Offline);
-        let downloads = crate::offline::dir(&self.dirs);
-        tokio::spawn(async move {
-            match tokio::fs::remove_dir_all(&downloads).await {
+        self.download_queue.clear();
+        if let Some((_, _, stop)) = self.download_running.take() {
+            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        // Under the store's lock, so a download still writing cannot put
+        // files back; its job sees the stop and keeps nothing after.
+        let dir = crate::offline::dir(&self.dirs);
+        let store = self.offline.take();
+        tokio::task::spawn_blocking(move || {
+            let held = store
+                .as_ref()
+                .map(|downloads| downloads.0.write().unwrap_or_else(|p| p.into_inner()));
+            match std::fs::remove_dir_all(&dir) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                     log::warn!("unable to delete the downloads: {error}");
                 }
                 _ => {}
             }
+            drop(held);
         });
-        self.offline = None;
-        self.download_queue.clear();
-        if let Some((_, stop)) = self.download_running.take() {
-            stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
         self.download_progress = None;
         self.download_removing.clear();
         self.emit_downloads();
@@ -3868,8 +4038,8 @@ impl Worker {
                 EngineEvent::SessionEnded => {
                     let _ = commands.send(Command::Reconnect);
                 }
-                EngineEvent::TrackEnded => {
-                    let _ = commands.send(Command::OfflineTrackEnded);
+                EngineEvent::TrackEnded(song) => {
+                    let _ = commands.send(Command::OfflineTrackEnded(song));
                 }
                 EngineEvent::AudioDevice { name, id } => {
                     let _ = events.send(Event::AudioDeviceFound { name, id });
@@ -4337,8 +4507,10 @@ impl Worker {
                 // Spotify Connect takes over what played offline, where it
                 // had got to.
                 if let Some(offline) = self.offline_playback.take() {
+                    // Where it had got to, read before it stops.
+                    let spec = offline.handover();
                     offline.player.stop();
-                    if let Some(spec) = offline.handover() {
+                    if let Some(spec) = spec {
                         self.resume = Some(PlaybackResume::Track(spec));
                     }
                 }
@@ -4370,7 +4542,16 @@ impl Worker {
                 self.start_prerelease();
             }
             None => {
-                if self.infers_reachability && is_unreachable_error(error.as_deref()) {
+                // Spotify answered, even with a refusal: it can be reached.
+                if self.infers_reachability && is_terminal_credential_error(error.as_deref()) {
+                    self.note_reachable(true);
+                }
+                // Offline only matters with downloads to play; without them
+                // it would only grey out the app.
+                if self.infers_reachability
+                    && self.offline.is_some()
+                    && is_unreachable_error(error.as_deref())
+                {
                     // Nothing reached Spotify: offline, as macOS would have
                     // said. Downloads play, and playback keeps trying.
                     self.note_reachable(false);
@@ -5306,9 +5487,7 @@ fn is_unreachable_error(error: Option<&str>) -> bool {
             && [
                 "dns error",
                 "failed to lookup address",
-                "client error (connect)",
                 "network is unreachable",
-                "connection refused",
                 "no route to host",
             ]
             .iter()
@@ -9248,15 +9427,18 @@ mod authorization_tests {
     fn download_progress_reaches_the_app() {
         let (runtime, mut worker, events) = worker("download-progress");
         let album = "spotify:album:4aawyAB9vmqN3uQ7FjRGTy".to_string();
-        worker.download_running = Some((album.clone(), Arc::default()));
+        worker.download_running = Some((7, album.clone(), Arc::default()));
         let (commands, receiver) = mpsc::unbounded_channel();
         commands
-            .send(Command::DownloadProgress(DownloadProgress {
-                context: album.clone(),
-                done: 2,
-                total: 10,
-                song: "spotify:track:one".into(),
-            }))
+            .send(Command::DownloadProgress {
+                job: 7,
+                progress: DownloadProgress {
+                    context: album.clone(),
+                    done: 2,
+                    total: 10,
+                    song: "spotify:track:one".into(),
+                },
+            })
             .unwrap();
         commands.send(Command::Shutdown).unwrap();
         runtime.block_on(worker.run(receiver));
@@ -9355,6 +9537,7 @@ mod authorization_tests {
                 };
                 async move { answer }
             },
+            |_| true,
             receiver.clone(),
             Duration::from_millis(1),
         ));
@@ -9368,10 +9551,32 @@ mod authorization_tests {
                 generation.send_replace(1);
                 async { Err(anyhow::anyhow!("locked")) }
             },
+            |_| true,
             receiver,
             Duration::from_millis(1),
         ));
         assert_eq!((opened, asked), (None, 1));
+
+        // An index no key opens is not asked about again.
+        let (_still, receiver) = watch::channel(0);
+        let mut asked = 0;
+        let opened: Option<()> = runtime.block_on(until_answered(
+            || {
+                asked += 1;
+                async {
+                    Err(anyhow::anyhow!(
+                        "the offline index does not open with this key"
+                    ))
+                }
+            },
+            credential_store_busy,
+            receiver,
+            Duration::from_millis(1),
+        ));
+        assert_eq!((opened, asked), (None, 1));
+        assert!(credential_store_busy(&anyhow::Error::from(
+            crate::credentials::Error::Timeout
+        )));
     }
 
     #[test]
@@ -9520,7 +9725,27 @@ mod authorization_tests {
         let _entered = runtime.enter();
         verify(&mut worker, ApiSource::Shared, "alice");
         worker.infers_reachability = true;
+        // Without downloads, nothing would play offline, so it stays online.
         let attempt = worker.engine_attempt;
+        let generation = worker.album_type_lookup.session_generation;
+        worker.on_engine_connected(
+            generation,
+            None,
+            Some(
+                "unable to connect to Spotify: dns error: failed to lookup address information"
+                    .into(),
+            ),
+            attempt,
+        );
+        assert!(worker.network_reachable);
+        worker.offline = Some(
+            runtime
+                .block_on(crate::offline::open_or_create(
+                    &worker.credentials,
+                    &worker.dirs,
+                ))
+                .unwrap(),
+        );
         let generation = worker.album_type_lookup.session_generation;
         let _ = events.try_iter().count();
         worker.on_engine_connected(
@@ -9554,7 +9779,111 @@ mod authorization_tests {
             "Spotify rejected the saved sign-in"
         )));
         assert!(!is_unreachable_error(Some("Spotify answered 503")));
+        // A proxy or firewall refusing the connection is not the network gone.
+        assert!(!is_unreachable_error(Some(
+            "tcp connect error: Connection refused"
+        )));
         assert!(!is_unreachable_error(None));
+    }
+
+    #[test]
+    fn offline_queued_songs_play_before_the_list_goes_on() {
+        let song = |name: &str| format!("spotify:track:{name}");
+        let mut order = PlayOrder::new(
+            vec![song("a"), song("b"), song("c")],
+            0,
+            false,
+            RepeatMode::Off,
+            VecDeque::from([song("q")]),
+        );
+        assert_eq!(order.upcoming(), [song("q"), song("b"), song("c")]);
+        assert_eq!(order.advance(), Some(song("q")));
+        // Back from a queued song: the list's song it followed.
+        assert_eq!(order.back(), Some(song("a")));
+        assert_eq!(order.advance(), Some(song("b")));
+        assert_eq!(order.advance(), Some(song("c")));
+        assert_eq!(order.advance(), None, "the list ends without repeat");
+        order.repeat = RepeatMode::Context;
+        assert_eq!(order.advance(), Some(song("a")));
+        assert_eq!(order.back(), Some(song("c")), "and wraps back with it");
+    }
+
+    #[test]
+    fn shuffling_offline_keeps_the_song_playing() {
+        let songs: Vec<String> = (0..20).map(|n| format!("spotify:track:{n}")).collect();
+        let mut order = PlayOrder::new(songs.clone(), 7, false, RepeatMode::Off, VecDeque::new());
+        order.set_shuffle(true);
+        assert_eq!(order.current, songs[7]);
+        assert_eq!(order.order[order.index], songs[7]);
+        assert_eq!(order.upcoming().len(), 19);
+        order.set_shuffle(false);
+        assert_eq!(order.index, 7, "the list's order comes back where it was");
+    }
+
+    #[test]
+    fn a_stopped_jobs_late_word_is_not_about_the_next_one() {
+        let (runtime, mut worker, _events) = worker("download-late-finish");
+        let album = "spotify:album:4aawyAB9vmqN3uQ7FjRGTy".to_string();
+        worker.download_running = Some((2, album.clone(), Arc::default()));
+        let (commands, receiver) = mpsc::unbounded_channel();
+        commands
+            .send(Command::DownloadFinished {
+                job: 1,
+                context: album.clone(),
+                error: None,
+            })
+            .unwrap();
+        commands.send(Command::Shutdown).unwrap();
+        runtime.block_on(worker.run(receiver));
+        assert!(
+            worker
+                .download_running
+                .as_ref()
+                .is_some_and(|(job, ..)| *job == 2),
+            "job 2 still runs"
+        );
+    }
+
+    #[test]
+    fn only_the_first_download_store_opened_is_used() {
+        let (runtime, mut worker, _events) = worker("download-one-store");
+        let first = runtime
+            .block_on(crate::offline::open_or_create(
+                &worker.credentials,
+                &worker.dirs,
+            ))
+            .unwrap();
+        let second = runtime
+            .block_on(crate::offline::restore(&worker.credentials, &worker.dirs))
+            .unwrap()
+            .unwrap();
+        worker.offline = Some(Arc::clone(&first));
+        let generation = *worker.session.borrow();
+        let (commands, receiver) = mpsc::unbounded_channel();
+        commands
+            .send(Command::OfflineRestored {
+                session_generation: generation,
+                downloads: Some(second),
+            })
+            .unwrap();
+        commands.send(Command::Shutdown).unwrap();
+        runtime.block_on(worker.run(receiver));
+        assert!(Arc::ptr_eq(worker.offline.as_ref().unwrap(), &first));
+        assert!(!worker.offline_opening);
+    }
+
+    #[test]
+    fn turning_a_stopping_download_back_on_queues_it_again() {
+        let (runtime, mut worker, events) = worker("download-off-on");
+        let _entered = runtime.enter();
+        let album = "spotify:album:4aawyAB9vmqN3uQ7FjRGTy".to_string();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        worker.download_running = Some((1, album.clone(), Arc::clone(&stop)));
+        worker.set_download(album.clone(), false);
+        assert!(stop.load(std::sync::atomic::Ordering::SeqCst));
+        worker.set_download(album.clone(), true);
+        assert_eq!(worker.download_queue, std::slice::from_ref(&album));
+        assert!(last_downloads(&events).unwrap().contexts.contains(&album));
     }
 
     #[test]
@@ -9574,10 +9903,6 @@ mod authorization_tests {
 
     #[test]
     fn only_an_unreachable_spotify_starts_with_the_remembered_account() {
-        let user = || User {
-            id: "alice".into(),
-            ..Default::default()
-        };
         for answered in [
             ApiError::RateLimited,
             ApiError::Status {
@@ -9585,14 +9910,18 @@ mod authorization_tests {
                 message: "unavailable".into(),
             },
         ] {
-            let mut remembered = Some(user());
-            assert_eq!(offline_profile(&answered, &mut remembered), None);
-            assert_eq!(remembered, Some(user()));
+            assert!(!is_network_failure(&answered));
         }
-        let unreachable = ApiError::Network("dns error".into());
+        assert!(is_network_failure(&ApiError::Network("dns error".into())));
+
+        let user = || User {
+            id: "alice".into(),
+            ..Default::default()
+        };
         let mut remembered = Some(user());
-        assert_eq!(offline_profile(&unreachable, &mut remembered), Some(user()));
-        assert_eq!(offline_profile(&unreachable, &mut remembered), None);
+        assert_eq!(offline_profile(false, &mut remembered), None);
+        assert_eq!(offline_profile(true, &mut remembered), Some(user()));
+        assert_eq!(offline_profile(true, &mut remembered), None, "used once");
     }
 
     #[test]
@@ -9833,6 +10162,7 @@ mod authorization_tests {
 /// one request waits. Gives up, with `None`, once the account changes.
 async fn until_answered<T, F, Fut>(
     mut open: F,
+    asks_again: impl Fn(&anyhow::Error) -> bool,
     generation: watch::Receiver<u64>,
     first_wait: Duration,
 ) -> Option<T>
@@ -9845,10 +10175,15 @@ where
     loop {
         match open().await {
             Ok(answer) => return Some(answer),
-            Err(error) => log::warn!(
+            Err(error) if asks_again(&error) => log::warn!(
                 "unable to open the offline downloads, asking again in {} s: {error:#}",
                 wait.as_secs()
             ),
+            // Asking again would only fail the same way.
+            Err(error) => {
+                log::warn!("unable to open the offline downloads: {error:#}");
+                return None;
+            }
         }
         tokio::time::sleep(wait).await;
         if *generation.borrow() != started {
@@ -9891,6 +10226,21 @@ fn offline_takeover(
     })
 }
 
+/// Whether an error is the credential store not answering yet, as when it
+/// is locked or asking the user, rather than one that asking again keeps.
+fn credential_store_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::credentials::Error>()
+        .is_some_and(|error| {
+            matches!(
+                error,
+                crate::credentials::Error::Timeout
+                    | crate::credentials::Error::Locked
+                    | crate::credentials::Error::Unavailable
+            )
+        })
+}
+
 /// The downloaded songs a load names, from its own list or a kept
 /// playlist's or album's, and where among them it starts: at the song it
 /// chose, or the first downloaded one after it.
@@ -9921,75 +10271,155 @@ fn offline_queue(spec: &LoadSpec, store: &crate::offline::Store) -> (Vec<String>
     (listed, start)
 }
 
-/// Downloaded songs playing with no Spotify session. Spotify Connect keeps
-/// the play order for the engine; with no engine, this keeps it.
-struct OfflinePlayback {
-    player: KeptPlayer,
-    context: Option<String>,
+/// How many upcoming songs the offline queue shows.
+const OFFLINE_UPCOMING: usize = 100;
+
+/// The order downloaded songs play in with no Spotify session, which
+/// Spotify Connect keeps for the engine: songs queued by hand first, then
+/// the list, shuffled or not.
+#[derive(Debug, Default)]
+struct PlayOrder {
     /// The downloaded songs in the list's order.
     listed: Vec<String>,
-    /// The same songs in play order, shuffled or not.
+    /// The same songs in play order.
     order: Vec<String>,
+    /// Where in `order` the list has got to.
     index: usize,
+    /// Songs queued by hand, played before the list goes on.
+    queued: VecDeque<String>,
+    /// What plays now: a queued song, or the list's.
+    current: String,
     shuffle: bool,
     repeat: RepeatMode,
 }
 
-impl OfflinePlayback {
-    fn play(&mut self, index: usize, position_ms: u32, play: bool) -> anyhow::Result<()> {
+impl PlayOrder {
+    fn new(
+        listed: Vec<String>,
+        start: usize,
+        shuffle: bool,
+        repeat: RepeatMode,
+        queued: VecDeque<String>,
+    ) -> Self {
+        let mut order = Self {
+            order: listed.clone(),
+            current: listed[start].clone(),
+            listed,
+            index: start,
+            queued,
+            shuffle: false,
+            repeat,
+        };
+        order.set_shuffle(shuffle);
+        order
+    }
+
+    fn at(&mut self, index: usize) -> String {
         self.index = index;
-        self.player.load(&self.order[index], position_ms, play)
+        self.current.clone_from(&self.order[index]);
+        self.current.clone()
     }
 
-    /// The next song, or the first again when the list repeats; at the end
-    /// otherwise, the player stops.
-    fn next(&mut self) -> anyhow::Result<()> {
+    /// The song after this one: a queued song first, then the list's next,
+    /// or its first again when the list repeats. `None` at the end.
+    fn advance(&mut self) -> Option<String> {
+        if let Some(song) = self.queued.pop_front() {
+            self.current.clone_from(&song);
+            return Some(song);
+        }
         if self.index + 1 < self.order.len() {
-            self.play(self.index + 1, 0, true)
+            Some(self.at(self.index + 1))
         } else if self.repeat == RepeatMode::Context {
-            self.play(0, 0, true)
+            Some(self.at(0))
         } else {
-            self.player.stop();
-            Ok(())
+            None
         }
     }
 
-    /// Back to the start of the song once it has played a few seconds, as
-    /// Spotify does; otherwise the song before.
-    fn previous(&mut self) -> anyhow::Result<()> {
-        if self.player.position_ms() > 3_000
-            || (self.index == 0 && self.repeat != RepeatMode::Context)
-        {
-            self.player.seek(0);
-            Ok(())
-        } else {
-            let index = self.index.checked_sub(1).unwrap_or(self.order.len() - 1);
-            self.play(index, 0, true)
+    /// The song before this one: from a queued song, the list's song it
+    /// followed; otherwise the list's song before, or `None` at the start
+    /// of a list that does not repeat.
+    fn back(&mut self) -> Option<String> {
+        if self.current != self.order[self.index] {
+            return Some(self.at(self.index));
+        }
+        match self.index.checked_sub(1) {
+            Some(index) => Some(self.at(index)),
+            None if self.repeat == RepeatMode::Context => Some(self.at(self.order.len() - 1)),
+            None => None,
         }
     }
 
-    /// Shuffles the songs after the current one, or puts the list's order
+    /// Shuffles the list after where it has got to, or puts its order
     /// back, without changing what plays now.
     fn set_shuffle(&mut self, on: bool) {
         use rand::seq::SliceRandom as _;
         self.shuffle = on;
-        let current = self.order[self.index].clone();
+        let anchor = self.order[self.index].clone();
         if on {
             let mut rest = self.listed.clone();
-            if let Some(at) = rest.iter().position(|song| *song == current) {
+            if let Some(at) = rest.iter().position(|song| *song == anchor) {
                 rest.remove(at);
             }
             rest.shuffle(&mut rand::rng());
-            self.order = std::iter::once(current).chain(rest).collect();
+            self.order = std::iter::once(anchor).chain(rest).collect();
             self.index = 0;
         } else {
             self.order = self.listed.clone();
             self.index = self
                 .order
                 .iter()
-                .position(|song| *song == current)
+                .position(|song| *song == anchor)
                 .unwrap_or(0);
         }
+    }
+
+    /// What plays after this song, in order: the queued songs, then the
+    /// rest of the list.
+    fn upcoming(&self) -> Vec<String> {
+        self.queued
+            .iter()
+            .chain(&self.order[self.index + 1..])
+            .take(OFFLINE_UPCOMING)
+            .cloned()
+            .collect()
+    }
+}
+
+/// Downloaded songs playing with no Spotify session, on a player of their
+/// own, in the order a [`PlayOrder`] keeps.
+struct OfflinePlayback {
+    player: KeptPlayer,
+    context: Option<String>,
+    order: PlayOrder,
+}
+
+impl OfflinePlayback {
+    /// The next song, or, at the end, the player stops.
+    fn next(&mut self) -> anyhow::Result<()> {
+        match self.order.advance() {
+            Some(song) => self.player.load(&song, 0, true),
+            None => {
+                self.player.stop();
+                Ok(())
+            }
+        }
+    }
+
+    /// Back to the start of the song once it has played a few seconds, as
+    /// Spotify does; otherwise the song before.
+    fn previous(&mut self) -> anyhow::Result<()> {
+        if self.player.position_ms() <= 3_000
+            && let Some(song) = self.order.back()
+        {
+            return self.player.load(&song, 0, true);
+        }
+        self.player.seek(0);
+        Ok(())
+    }
+
+    fn replay(&self) -> anyhow::Result<()> {
+        self.player.load(&self.order.current, 0, true)
     }
 
     /// The song, place and modes for Spotify Connect to carry on with.
@@ -10000,13 +10430,13 @@ impl OfflinePlayback {
             uris: if self.context.is_some() {
                 Vec::new()
             } else {
-                self.listed.clone()
+                self.order.listed.clone()
             },
             offset_uri: Some(now.uri),
             position_ms: now.position_ms,
             play: now.playing,
-            shuffle: Some(self.shuffle),
-            repeat: Some(self.repeat),
+            shuffle: Some(self.order.shuffle),
+            repeat: Some(self.order.repeat),
             ..LoadSpec::default()
         })
     }
@@ -10014,63 +10444,94 @@ impl OfflinePlayback {
 
 /// One playlist or album downloading, song by song.
 struct DownloadJob {
+    id: u64,
     session: librespot_core::Session,
-    credentials: crate::credentials::Store,
-    dirs: AppDirs,
-    downloads: Option<Arc<crate::offline::Downloads>>,
+    downloads: Arc<crate::offline::Downloads>,
     name: Option<crate::offline::Name>,
-    session_generation: u64,
     commands: mpsc::UnboundedSender<Command>,
 }
 
 impl DownloadJob {
-    async fn run(&self, context: &str, stop: &std::sync::atomic::AtomicBool) -> anyhow::Result<()> {
+    /// Every change to the store checks `stop` under the store's lock, so a
+    /// download turned off, or an account signed out, while a song was on
+    /// its way never comes back.
+    async fn run(
+        &self,
+        context: &str,
+        stop: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> anyhow::Result<()> {
         let stopped = || stop.load(std::sync::atomic::Ordering::SeqCst);
-        let downloads = match &self.downloads {
-            Some(downloads) => Arc::clone(downloads),
-            None => {
-                let downloads =
-                    crate::offline::open_or_create(&self.credentials, &self.dirs).await?;
-                let _ = self.commands.send(Command::OfflineRestored {
-                    session_generation: self.session_generation,
-                    downloads: Some(Arc::clone(&downloads)),
-                });
-                downloads
-            }
-        };
         let uris = session_reads::song_uris(&self.session, context)
             .await
             .map_err(|failure| match failure {
                 session_reads::Failure::Definitive(error) => anyhow::anyhow!(error),
                 session_reads::Failure::Retry(error) => error,
             })?;
-        if stopped() {
-            return Ok(());
-        }
         let listing = context.to_owned();
         let name = self.name.clone();
-        let missing = crate::offline::change(&downloads, move |store| {
+        let stopping = Arc::clone(stop);
+        let missing = crate::offline::change(&self.downloads, move |store| {
+            if stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(None);
+            }
             store.set_name(&listing, name);
-            store.set_context(&listing, uris)
+            store.set_context(&listing, uris).map(Some)
         })
         .await?;
+        let Some(missing) = missing else {
+            return Ok(());
+        };
         let _ = self.commands.send(Command::DownloadsChanged);
+        let dir = self
+            .downloads
+            .0
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .dir()
+            .to_path_buf();
         let total = missing.len();
         for (done, uri) in missing.into_iter().enumerate() {
             if stopped() {
                 break;
             }
-            let _ = self
-                .commands
-                .send(Command::DownloadProgress(DownloadProgress {
+            let _ = self.commands.send(Command::DownloadProgress {
+                job: self.id,
+                progress: DownloadProgress {
                     context: context.to_owned(),
                     done,
                     total,
                     song: uri.clone(),
-                }));
+                },
+            });
             match crate::offline::fetch(&self.session, &uri).await {
                 Ok(fetched) => {
-                    crate::offline::change(&downloads, move |store| store.add(fetched)).await?;
+                    // The file is written outside the store's lock, which
+                    // the player reads before every song.
+                    let crate::offline::Fetched {
+                        uris,
+                        track,
+                        encrypted,
+                    } = fetched;
+                    let file = dir.join(&track.file);
+                    let writing = file.clone();
+                    tokio::task::spawn_blocking(move || {
+                        fastframe_file::write_private(&writing, encrypted)
+                    })
+                    .await?
+                    .map_err(|error| {
+                        anyhow::anyhow!("unable to save the downloaded song: {error}")
+                    })?;
+                    let stopping = Arc::clone(stop);
+                    crate::offline::change(&self.downloads, move |store| {
+                        if stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                            if !store.holds_file(&track.file) {
+                                let _ = std::fs::remove_file(&file);
+                            }
+                            return Ok(());
+                        }
+                        store.list(uris, track)
+                    })
+                    .await?;
                     let _ = self.commands.send(Command::DownloadsChanged);
                 }
                 // One song Spotify will not serve leaves the rest to fetch.
@@ -10084,10 +10545,14 @@ impl DownloadJob {
 /// The remembered profile to start with when the account check could not
 /// reach Spotify at all, once. Any answer from Spotify, even a rate limit,
 /// means the network is there, so it keeps the usual retry.
-fn offline_profile(error: &ApiError, remembered: &mut Option<User>) -> Option<User> {
+fn offline_profile(unreachable: bool, remembered: &mut Option<User>) -> Option<User> {
+    unreachable.then(|| remembered.take()).flatten()
+}
+
+/// Whether a request never reached Spotify, as opposed to any answer from
+/// it, even a rate limit.
+fn is_network_failure(error: &ApiError) -> bool {
     matches!(error, ApiError::Network(_))
-        .then(|| remembered.take())
-        .flatten()
 }
 
 fn web_slot(source: ApiSource) -> CredentialSlot {

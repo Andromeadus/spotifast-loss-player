@@ -70,6 +70,13 @@ computer transfers that device's current song, position, and queue, including
 manually queued copies. A paused session stays paused. The handoff itself does
 not consume a queue row or restore an older queue saved on this computer.
 
+Offline, in this fork (Andromeadus/spotifast-loss-player), downloaded
+songs play on a player of Spotifast's own, which keeps the queue Spotify
+would: the rules below hold for it, with three differences. Only
+downloaded songs can be queued. The queue on show comes from that player,
+never from Spotify. When Spotify Connect takes playback back, the songs
+under **Playing next** are queued on it again.
+
 1. **The list shows the play order.** The top row plays next, followed by the
    rows below it.
 

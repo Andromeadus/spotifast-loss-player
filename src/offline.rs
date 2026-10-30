@@ -60,7 +60,7 @@ pub struct Artist {
 
 impl Track {
     /// The song as the app's tables show one, under `uri`.
-    fn api_track(&self, uri: &str) -> crate::api::models::Track {
+    pub(crate) fn api_track(&self, uri: &str) -> crate::api::models::Track {
         use crate::api::models::{Album, ArtistRef, Image};
         crate::api::models::Track {
             id: crate::util::uri_id(uri).map(str::to_string),
@@ -177,6 +177,8 @@ pub struct KeptList {
     pub uri: String,
     pub name: Name,
     pub songs: Vec<crate::api::models::Track>,
+    /// Changes whenever `songs` does, so a page can keep its rows.
+    pub revision: u64,
 }
 
 pub struct Store {
@@ -251,12 +253,28 @@ impl Store {
             track,
             encrypted,
         } = fetched;
-        fastframe_file::write(&self.dir.join(&track.file), encrypted)
+        fastframe_file::write_private(&self.dir.join(&track.file), encrypted)
             .context("unable to save the downloaded song")?;
+        self.list(uris, track)
+    }
+
+    /// Lists a song whose file is already in [`Store::dir`], under each of
+    /// its URIs.
+    pub fn list(&mut self, uris: Vec<String>, track: Track) -> anyhow::Result<()> {
         for uri in uris {
             self.index.tracks.insert(uri, track.clone());
         }
         self.save()
+    }
+
+    /// The folder the song files live in.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// Whether any listed song plays from `file`.
+    pub fn holds_file(&self, file: &str) -> bool {
+        self.index.tracks.values().any(|track| track.file == file)
     }
 
     pub fn has_context(&self, uri: &str) -> bool {
@@ -275,13 +293,26 @@ impl Store {
                 self.index
                     .contexts
                     .iter()
-                    .map(|(uri, listed)| KeptList {
-                        uri: uri.clone(),
-                        name: self.index.names.get(uri).cloned().unwrap_or_default(),
-                        songs: listed
+                    .map(|(uri, listed)| {
+                        let songs: Vec<_> = listed
                             .iter()
-                            .filter_map(|song| Some(self.index.tracks.get(song)?.api_track(song)))
-                            .collect(),
+                            .filter(|song| self.index.tracks.contains_key(*song))
+                            .collect();
+                        let revision = {
+                            use std::hash::{Hash as _, Hasher as _};
+                            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                            songs.hash(&mut hasher);
+                            hasher.finish()
+                        };
+                        KeptList {
+                            uri: uri.clone(),
+                            name: self.index.names.get(uri).cloned().unwrap_or_default(),
+                            songs: songs
+                                .into_iter()
+                                .map(|song| self.index.tracks[song].api_track(song))
+                                .collect(),
+                            revision,
+                        }
                     })
                     .collect(),
             ),
@@ -430,12 +461,18 @@ pub async fn open_or_create(
     if let Some(downloads) = restore(credentials, dirs).await? {
         return Ok(downloads);
     }
+    let dir = dir(dirs);
+    // Downloads whose key was saved and never revoked, yet is not found:
+    // the credential store lost it or hides it. A new key would lock them
+    // for good, so stop instead.
+    if dir.join(INDEX_FILE).exists() && credentials.saved(crate::credentials::Slot::Offline) {
+        bail!("the downloads' key is missing from the system credential store");
+    }
     let key = Store::new_key()?;
     credentials
         .lease(crate::credentials::Slot::Offline)
         .save(crate::credentials::Grant::Offline(key.clone()))
         .await?;
-    let dir = dir(dirs);
     // Files left from a key now gone, such as a download still writing when
     // its account signed out, can never be opened again: they go.
     let leftovers = dir.clone();
@@ -586,13 +623,21 @@ async fn playable(session: &Session, item: AudioItem) -> anyhow::Result<AudioIte
 /// The whole encrypted file, from librespot's cache when it has it.
 async fn download(session: &Session, file_id: FileId, kbps: u16) -> anyhow::Result<Vec<u8>> {
     let mut file = AudioFile::open(session, file_id, usize::from(kbps) * 1024 / 8).await?;
-    file.get_stream_loader_controller()?.set_stream_mode();
-    tokio::task::spawn_blocking(move || {
+    let controller = file.get_stream_loader_controller()?;
+    controller.set_stream_mode();
+    let size = controller.len();
+    let bytes = tokio::task::spawn_blocking(move || {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map(|_| bytes)
     })
     .await?
-    .context("unable to download the song")
+    .context("unable to download the song")?;
+    // A connection that dropped part way ends the read early; a song kept
+    // like that would stop part way through.
+    if bytes.len() != size {
+        bail!("the download stopped at {} of {size} bytes", bytes.len());
+    }
+    Ok(bytes)
 }
 
 /// Whether `key` turns the start of `encrypted` into an Ogg page.
@@ -743,6 +788,8 @@ mod tests {
         assert!(store.get("spotify:track:two").is_some());
         assert!(dir.join("f2").exists());
 
+        assert!(store.holds_file("f2"));
+        assert!(!store.holds_file("f1"));
         store.remove_context("spotify:playlist:p").unwrap();
         assert_eq!(store.summary(), Summary::default());
         assert!(!dir.join("f2").exists());
@@ -779,6 +826,32 @@ mod tests {
         let downloads = open_or_create(&credentials, &dirs).await.unwrap();
         assert!(downloads.0.read().unwrap().summary().contexts.is_empty());
         assert!(!leftover.join(INDEX_FILE).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn downloads_whose_key_went_missing_are_kept() {
+        let root = temp_dir("offline-lost-key");
+        let dirs = crate::paths::AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let credentials = crate::credentials::Store::in_memory(dirs.clone());
+        let downloads = open_or_create(&credentials, &dirs).await.unwrap();
+        change(&downloads, |store| {
+            store.set_context("spotify:album:x", Vec::new()).map(|_| ())
+        })
+        .await
+        .unwrap();
+        // The credential store loses the key, though nobody revoked it.
+        credentials
+            .lease(crate::credentials::Slot::Offline)
+            .delete()
+            .await
+            .unwrap();
+        assert!(open_or_create(&credentials, &dirs).await.is_err());
+        assert!(dir(&dirs).join(INDEX_FILE).exists(), "the downloads stay");
         std::fs::remove_dir_all(root).unwrap();
     }
 
